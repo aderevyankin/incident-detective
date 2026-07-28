@@ -23,16 +23,10 @@ import json
 import os
 import sys
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
-import parse_logs as pl  # noqa: E402
-from kb_common import run_script  # noqa: E402
+from kb_common import LEVEL_ORD, dump_json, run_script  # noqa: E402
 
 WEIGHTS = [
     ('logs', 'Логи', 0.30),
@@ -91,7 +85,7 @@ def score_logs(parsed):
 
     groups = parsed.get('groups') or []
     errs = [g for g in groups
-            if pl.LEVEL_ORD.get(g.get('level'), 2) >= pl.LEVEL_ORD['ERROR']]
+            if LEVEL_ORD.get(g.get('level'), 2) >= LEVEL_ORD['ERROR']]
     top = max((g.get('count', 0) for g in errs), default=0)
     if top >= 3:
         parts += 0.3
@@ -123,7 +117,10 @@ def score_kb(kb, stand, service):
     """Видели ли мы это раньше — и тот ли это случай."""
     if kb is None:
         return None
-    hits = kb if isinstance(kb, list) else kb.get('hits') or []
+    # kb_search.py --format json всегда выдаёт список — раньше здесь
+    # оставалась мёртвая ветка на случай словаря с ключом 'hits', которого
+    # ни один вызывающий код никогда не производил
+    hits = kb or []
     if not hits:
         return {'value': 0.0, 'notes': ['совпадений в базе нет — инцидент выглядит новым'],
                 'warnings': []}
@@ -348,10 +345,8 @@ def main(argv=None):
     total, rows = combine(scores)
 
     if args.format == 'json':
-        json.dump({'confidence': round(total, 3), 'verdict': verdict(total),
-                   'claim': args.claim, 'contours': rows},
-                  sys.stdout, ensure_ascii=False, indent=2)
-        sys.stdout.write('\n')
+        dump_json({'confidence': round(total, 3), 'verdict': verdict(total),
+                  'claim': args.claim, 'contours': rows}, sys.stdout)
     else:
         render_md(total, rows, args.claim, sys.stdout)
     return 0

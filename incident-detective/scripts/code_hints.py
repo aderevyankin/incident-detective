@@ -15,7 +15,6 @@
 
 import argparse
 import io
-import json
 import os
 import re
 import subprocess
@@ -23,15 +22,12 @@ import sys
 from collections import OrderedDict
 from datetime import datetime, timedelta
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
-from kb_common import MAX_SUMMARY_CHARS, load_parsed, run_script  # noqa: E402
+from kb_common import (  # noqa: E402
+    EXC_RE, MAX_SUMMARY_CHARS, dump_json, load_parsed, parse_time_arg, run_script,
+)
 
 SKIP_DIRS = {'.git', 'node_modules', 'venv', '.venv', 'env', '__pycache__',
              'dist', 'build', 'target', '.idea', '.gradle', 'vendor',
@@ -68,10 +64,6 @@ FRAME_PATTERNS = [
     (re.compile(r'\b([\w./\-]+\.(?:py|java|kt|go|rb|php|cs|rs|ts|js)):(\d+)\b'),
      lambda m: (m.group(1), int(m.group(2)), '')),
 ]
-
-EXC_RE = re.compile(
-    r'\b((?:[a-z][\w]*\.)*[A-Z][A-Za-z0-9_]*'
-    r'(?:Exception|Error|Throwable|Timeout|Failure|Fault))\b')
 
 # ---- извлечение из шаблона литералов ------------------------------------
 
@@ -404,16 +396,17 @@ def render_frame(frame, w):
     w('\n')
 
 
-def limit_frames(frames, data, budget=MAX_SUMMARY_CHARS):
-    """Сколько фреймов поместится в бюджет вывода.
+def limit_frames(frames, budget=MAX_SUMMARY_CHARS):
+    """(показанные фреймы, число скрытых) — без побочных эффектов.
 
     Фреймы идут по убыванию значимости: верхние ведут в код проекта, нижние —
     в библиотеки. Обрезаем хвост, а не показываем всё подряд: вывод едет в
-    контекст агента.
+    контекст агента. Число скрытых считается здесь и кладётся в `data` в
+    `build()` — оно должно быть в JSON всегда, а не только на пути рендера
+    markdown.
     """
     if budget <= 0:
-        data['frames_hidden'] = 0
-        return frames
+        return list(frames), 0
     used = 0
     shown = []
     for frame in frames:
@@ -423,8 +416,7 @@ def limit_frames(frames, data, budget=MAX_SUMMARY_CHARS):
         if used > budget * 2 // 3 and shown:
             break
         shown.append(frame)
-    data['frames_hidden'] = len(frames) - len(shown)
-    return shown
+    return shown, len(frames) - len(shown)
 
 
 def render_md(data, out):
@@ -438,7 +430,8 @@ def render_md(data, out):
     frames = data['frames']
     if frames:
         w('## Фреймы стектрейсов\n\n')
-        for frame in limit_frames(frames, data):
+        shown, _hidden = limit_frames(frames)
+        for frame in shown:
             render_frame(frame, w)
         hidden = data.get('frames_hidden', 0)
         if hidden:
@@ -512,10 +505,10 @@ def build(args):
                          'или подай стектрейс в stdin')
 
     if args.since:
-        try:
-            first_ts = datetime.strptime(args.since, '%Y-%m-%d %H:%M')
-        except ValueError:
-            first_ts = datetime.strptime(args.since, '%Y-%m-%d')
+        # общий разбор: тот же набор форматов, что и у остальных скриптов, и
+        # понятная ошибка вместо трассировки на неразобранном значении —
+        # раньше второй `strptime` не был обёрнут в try
+        first_ts = parse_time_arg(args.since)
 
     blob = '\n'.join(texts)
     index = index_by_basename(repo)
@@ -546,12 +539,14 @@ def build(args):
         exceptions[exc] = found
 
     commits = commits_in_window(repo, first_ts, last_ts) if git_ok else []
+    _shown, frames_hidden = limit_frames(frames)
 
     data = {
         'repo': repo,
         'git': git_ok,
         'first_ts': first_ts.strftime('%Y-%m-%d %H:%M:%S') if first_ts else None,
         'frames': frames,
+        'frames_hidden': frames_hidden,
         'grep': hits,
         'phrases': phrases,
         'exceptions': exceptions,
@@ -576,8 +571,7 @@ def main(argv=None):
 
     data = build(args)
     if args.format == 'json':
-        json.dump(data, sys.stdout, ensure_ascii=False, indent=2, default=str)
-        sys.stdout.write('\n')
+        dump_json(data, sys.stdout)
     else:
         render_md(data, sys.stdout)
     return 0

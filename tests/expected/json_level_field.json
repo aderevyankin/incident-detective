@@ -1,0 +1,12 @@
+{
+  "fixture": "json_level_field.log",
+  "why": "JSON-строка со словом «debug» в тексте сообщения, но полем \"level\":\"error\". Префильтр раньше брал уровень по первому совпадению в сыром тексте — находил «debug» и отбрасывал запись при --level ERROR ещё до разбора, хотя её настоящий уровень error. Для JSON-строк отсев по уровню теперь не применяется до разбора: уровень берётся из поля.",
+  "args": ["--level", "ERROR"],
+  "expect": {
+    "records": 3,
+    "formats": {"json": 3},
+    "levels": {"INFO": 1, "ERROR": 1, "DEBUG": 1},
+    "error_groups": 1,
+    "groups_contain": [{"template": "debug retry failed", "count": 1, "level": "ERROR"}]
+  }
+}

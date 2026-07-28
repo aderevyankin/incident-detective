@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Общее для скриптов скилла: работа со временем, база знаний, токенизация, скоринг."""
 
+import io
 import json
 import os
 import re
@@ -24,6 +25,141 @@ SECTIONS = ['Симптомы', 'Диагностика', 'Причина', 'Р�
 MAX_SUMMARY_CHARS = 12000
 
 LIST_FIELDS = ('stands', 'services', 'tags', 'signatures', 'related', 'files', 'commits')
+
+# Единый предел количества обрабатываемых строк — по умолчанию «практически без
+# предела»: явный флаг у скрипта нужнее магического числа, скопированного трижды.
+DEFAULT_MAX_LINES = 2000000
+
+# Уровни логов и их порядок — единственный источник. Разошедшиеся копии этого
+# списка означают, что `--level ERROR` в одном скрипте отсекает не то же самое,
+# что в другом.
+LEVELS = ['TRACE', 'DEBUG', 'INFO', 'NOTICE', 'WARN', 'ERROR', 'FATAL']
+LEVEL_ORD = {name: i for i, name in enumerate(LEVELS)}
+
+# Класс исключения/ошибки в сыром тексте: полный вариант, знающий и
+# `...Denied`/`...Refused` — без них `AccessDeniedException` считался бы
+# сигнатурой, но не находился бы в коде по классу исключения.
+EXC_RE = re.compile(
+    r'\b((?:[a-z][\w]*\.)*[A-Z][A-Za-z0-9_]*'
+    r'(?:Exception|Error|Throwable|Timeout|Failure|Fault|Denied|Refused))\b')
+
+
+def require_python():
+    """Преамбула проверки версии — без f-строк: на старом интерпретаторе должно
+    печататься сообщение, а не падать SyntaxError."""
+    if sys.version_info < (3, 8):
+        sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
+                         % (sys.version.split()[0], sys.executable))
+        sys.exit(2)
+
+
+def dump_json(obj, dest):
+    """JSON с единым форматом: `ensure_ascii=False, indent=2, default=str`.
+
+    `dest` — путь к файлу (тогда открывается и закрывается сам) или уже
+    открытый поток (stdout, io.StringIO, файловый объект). `default=str`
+    избавляет вызывающий код от ручной сериализации дат — она форматируется
+    так же, как читалась.
+    """
+    if isinstance(dest, (str, bytes, os.PathLike)):
+        with open(dest, 'w', encoding='utf-8') as fh:
+            json.dump(obj, fh, ensure_ascii=False, indent=2, default=str)
+            fh.write('\n')
+        return
+    json.dump(obj, dest, ensure_ascii=False, indent=2, default=str)
+    dest.write('\n')
+
+
+def overflow_dir():
+    """Директория для полных результатов, обрезанных в сводке — общая для всех
+    скриптов, чтобы агент знал одно место, а не путь, который меняется от
+    скрипта к скрипту."""
+    return os.path.join(os.environ.get('TMPDIR') or '/tmp', 'incident-detective')
+
+
+def dump_overflow(payload, name):
+    """Сохраняет то, что не поместилось в сводку, и возвращает путь.
+
+    None, если сохранить не удалось — вызывающий код должен сказать об этом в
+    выводе, а не притвориться, что путь есть.
+    """
+    directory = overflow_dir()
+    try:
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, name)
+        dump_json(payload, path)
+    except OSError:
+        return None
+    return path
+
+
+def fit_by_render(items, render, budget, reserve=0):
+    """Сколько элементов поместится в бюджет объёма.
+
+    `render(item, write)` пишет один элемент через переданную `write`;
+    функция суммирует фактический размер вывода, а не оценивает его на глаз —
+    так же поступают все существующие реализации, которые эта функция сводит
+    в одну. `reserve` — место, зарезервированное под хвост (шапки следующих
+    разделов, строка «не показано ещё N»).
+
+    Возвращает (показанные элементы, число скрытых). Бюджет ``<= 0`` —
+    предела нет, показаны все элементы.
+    """
+    if budget is None or budget <= 0:
+        items = list(items)
+        return items, 0
+    room = max(budget - reserve, 0)
+    used = 0
+    shown = []
+    for item in items:
+        buf = io.StringIO()
+        render(item, buf.write)
+        used += len(buf.getvalue())
+        if used > room and shown:
+            break
+        shown.append(item)
+    items = list(items)
+    return shown, len(items) - len(shown)
+
+
+# --------------------------------------------------------------------------
+# Разбор аргументов времени (--since/--until)
+# --------------------------------------------------------------------------
+
+# «1h», «30m», «2d» — окно, отсчитанное назад от текущего момента.
+REL_TIME_RE = re.compile(r'^-?(\d+)\s*([smhd])$', re.IGNORECASE)
+REL_UNITS = {'s': 'seconds', 'm': 'minutes', 'h': 'hours', 'd': 'days'}
+
+
+def parse_time_arg(value):
+    """Разбор `--since`/`--until`: абсолютное время или относительное окно.
+
+    Канонический разбор для всех скриптов скилла — единственное место, где
+    он живёт. Поиск таймстемпа в свободном тексте (`find_timestamp`) отложен
+    до вызова: `parse_logs` сам импортирует из `kb_common` на уровне модуля, и
+    импорт здесь на верхнем уровне закольцевал бы модули друг на друга.
+    """
+    text = str(value).strip()
+    rel = REL_TIME_RE.match(text)
+    if rel:
+        # «сейчас» берётся из kb_common.now: с заданным INCIDENT_NOW окно
+        # получается тем же в любой день запуска
+        return now() - timedelta(**{REL_UNITS[rel.group(2).lower()]: int(rel.group(1))})
+    from parse_logs import find_timestamp
+    dt, _ = find_timestamp(text, limit=len(text) + 1)
+    if dt:
+        return dt
+    for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%d', '%H:%M'):
+        try:
+            dt = datetime.strptime(text, fmt)
+            if fmt == '%H:%M':
+                today = now()
+                dt = dt.replace(year=today.year, month=today.month, day=today.day)
+            return dt
+        except ValueError:
+            continue
+    raise SystemExit('Не разобрал время: %r (ожидается «2026-07-28 12:00», '
+                     '«12:00» или «1h»)' % value)
 
 # --------------------------------------------------------------------------
 # Текущее время и телеметрия вызовов
@@ -480,10 +616,6 @@ def load_incidents(directory=None):
     return items
 
 
-def index_path(directory=None):
-    return os.path.join(kb_dir(directory), 'index.json')
-
-
 def index_is_stale(directory=None):
     """(устарел ли индекс, причина).
 
@@ -545,7 +677,7 @@ def load_from_index(directory=None):
         sections = entry.get('sections')
         if sections is None:      # индекс собран старой версией kb_index.py
             return None
-        meta = {k: v for k, v in entry.items() if k not in ('sections', 'file', 'symptoms')}
+        meta = {k: v for k, v in entry.items() if k not in ('sections', 'file')}
         items.append({'meta': meta, 'body': '', 'sections': sections,
                       'path': os.path.join(directory, entry.get('file') or '')})
     return items

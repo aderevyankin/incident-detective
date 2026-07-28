@@ -17,24 +17,20 @@
 """
 
 import argparse
-import json
 import os
 import sys
 from collections import Counter, OrderedDict
 from datetime import timedelta
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
 import parse_logs as pl  # noqa: E402
-from kb_common import (TIME_SCALE, apply_offset,  # noqa: E402
-                       estimate_clock_skew, parse_offset_arg, render_clock_findings,
-                       run_script, sort_key)
+from kb_common import (  # noqa: E402
+    DEFAULT_MAX_LINES, MAX_SUMMARY_CHARS, TIME_SCALE, apply_offset, dump_json,
+    dump_overflow, estimate_clock_skew, fit_by_render, parse_offset_arg,
+    parse_time_arg, render_clock_findings, run_script, sort_key,
+)
 
 
 # Смешение записей с зоной и без неё чинить нечем: узнать зону наивных записей
@@ -335,12 +331,28 @@ def render_chain(trace_id, hops, matched, out, args):
 
     limit = args.records
     if limit:
-        w('## Записи (%d из %d)\n\n' % (min(limit, len(matched)), len(matched)))
-        rows = sorted(matched, key=lambda p: sort_key(p[1].ts, p[0], p[1].line_no))
-        for label, rec in rows[:limit]:
-            w('%s  %-5s  **%s**  _%s:%d_\n' % (pl.fmt_ts(rec.ts), rec.level or '-',
-                                               label, rec.origin, rec.line_no))
-            w('```\n%s\n```\n\n' % rec.raw_text[:1200])
+        rows = sorted(matched, key=lambda p: sort_key(p[1].ts, p[0], p[1].line_no))[:limit]
+
+        def render_row(pair, write):
+            label, rec = pair
+            write('%s  %-5s  **%s**  _%s:%d_\n' % (pl.fmt_ts(rec.ts), rec.level or '-',
+                                                    label, rec.origin, rec.line_no))
+            write('```\n%s\n```\n\n' % rec.raw_text[:1200])
+
+        # без бюджета `--records 500` уводил в контекст сотни килобайт сырых
+        # записей; полный список остаётся доступен через файл, если что-то не
+        # поместилось
+        shown, hidden = fit_by_render(rows, render_row, args.max_chars, reserve=260)
+        w('## Записи (%d из %d)\n\n' % (len(shown), len(matched)))
+        for pair in shown:
+            render_row(pair, w)
+        if hidden:
+            full = dump_overflow([{
+                'ts': pl.fmt_ts(rec.ts), 'level': rec.level, 'service': label,
+                'origin': rec.origin, 'line_no': rec.line_no, 'text': rec.raw_text,
+            } for label, rec in rows], 'trace-records.json')
+            note = (' Полный список: `%s`.' % full) if full else ''
+            w('_Не показано записей: %d — вывод ограничен по объёму.%s_\n\n' % (hidden, note))
 
 
 def render_clocks(findings, traces, out, mixed=False):
@@ -401,12 +413,15 @@ def main(argv=None):
     ap.add_argument('--since', help='начало окна')
     ap.add_argument('--until', help='конец окна')
     ap.add_argument('--format', choices=['md', 'json'], default='md')
+    ap.add_argument('--max-chars', type=int, default=MAX_SUMMARY_CHARS,
+                    help='предельный объём раздела "Записи" в символах (%d), '
+                         '0 — без предела' % MAX_SUMMARY_CHARS)
     ap.add_argument('--encoding', default='utf-8')
-    ap.add_argument('--max-lines', type=int, default=2000000)
+    ap.add_argument('--max-lines', type=int, default=DEFAULT_MAX_LINES)
     args = ap.parse_args(argv)
 
-    args.since = pl.parse_time_arg(args.since) if args.since else None
-    args.until = pl.parse_time_arg(args.until) if args.until else None
+    args.since = parse_time_arg(args.since) if args.since else None
+    args.until = parse_time_arg(args.until) if args.until else None
     args.offsets = dict(parse_offset_arg(item) for item in args.offset)
 
     sources = [parse_source_arg(item) for item in args.log]
@@ -426,10 +441,8 @@ def main(argv=None):
         findings, traces = check_clocks(pairs)
         mixed = mixed_zones(pairs)
         if args.format == 'json':
-            json.dump({'traces': traces, 'clock_findings': findings,
-                       'time_scale': TIME_SCALE, 'mixed_timezones': mixed}, out,
-                      ensure_ascii=False, indent=2)
-            out.write('\n')
+            dump_json({'traces': traces, 'clock_findings': findings,
+                      'time_scale': TIME_SCALE, 'mixed_timezones': mixed}, out)
         else:
             render_clocks(findings, traces, out, mixed)
         return 0
@@ -437,9 +450,7 @@ def main(argv=None):
     if args.id:
         hops, matched = build_chain(pairs, args.id)
         if args.format == 'json':
-            json.dump(chain_to_json(args.id, hops, matched, args.offsets), out,
-                      ensure_ascii=False, indent=2)
-            out.write('\n')
+            dump_json(chain_to_json(args.id, hops, matched, args.offsets), out)
         else:
             render_chain(args.id, hops, matched, out, args)
         return 0 if hops else 1
@@ -447,7 +458,7 @@ def main(argv=None):
     stats = collect_candidates(pairs)
     items = rank_candidates(stats, args.top or 10)
     if args.format == 'json':
-        json.dump({
+        dump_json({
             'total_traces': len(stats),
             'time_scale': TIME_SCALE,
             'mixed_timezones': mixed_zones(pairs),
@@ -457,8 +468,7 @@ def main(argv=None):
                 'first': pl.fmt_ts(it['first']) if it['first'] else None,
                 'last': pl.fmt_ts(it['last']) if it['last'] else None,
             } for it in items],
-        }, out, ensure_ascii=False, indent=2)
-        out.write('\n')
+        }, out)
     else:
         render_candidates(items, out, len(stats), [label for label, _ in sources])
     return 0

@@ -7,13 +7,8 @@ import os
 import re
 import sys
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
     DEFAULT_KB, ENV_KB, KB_DEFAULT, KB_PROJECT, SECTIONS, dump_frontmatter, kb_is_empty,
