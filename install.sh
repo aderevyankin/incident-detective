@@ -3,6 +3,8 @@
 #
 #   ./install.sh              — личный скилл (~/.qwen/skills/)
 #   ./install.sh --project    — проектный скилл (./.qwen/skills/), едет в git с командой
+#   ./install.sh --yes        — не спрашивать подтверждения на перезапись
+#   ./install.sh --help       — справка
 #
 # Копирует, а не симлинкует: Qwen читает файлы при старте, симлинк на внешний
 # каталог может не подхватиться.
@@ -12,7 +14,43 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/incident-detective"
 NAME="incident-detective"
 
-if [[ "${1:-}" == "--project" ]]; then
+usage() {
+    cat <<'EOF'
+Установка скилла incident-detective.
+
+    ./install.sh              личный скилл (~/.qwen/skills/)
+    ./install.sh --project    проектный скилл (./.qwen/skills/)
+    ./install.sh --yes        не спрашивать подтверждения на перезапись
+    ./install.sh --help       эта справка
+
+Переустановка поверх существующей установки сохраняет записи базы знаний
+(kb/INC-*.md): они копируются в резервную папку, её путь печатается, и после
+успешного возврата записей папка убирается. База, вынесенная наружу через
+INCIDENT_KB_DIR, переустановкой не затрагивается.
+EOF
+}
+
+PROJECT=0
+ASSUME_YES=0
+
+# Разбор циклом, а не по "$1": иначе `--yes --project` молча ставит личный скилл,
+# а опечатка в имени флага выглядит как установка по умолчанию.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --project) PROJECT=1 ;;
+        --yes|-y)  ASSUME_YES=1 ;;
+        --help|-h) usage; exit 0 ;;
+        *)
+            echo "Неизвестный аргумент: $1" >&2
+            echo >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+if [[ "$PROJECT" -eq 1 ]]; then
     DEST_ROOT="$(pwd)/.qwen/skills"
     SCOPE="проектный (.qwen/skills)"
 else
@@ -42,29 +80,64 @@ fi
 
 mkdir -p "$DEST_ROOT"
 
+STAGE=""
+BACKUP=""
+
+# Недостроенная копия — мусор рядом с целью, убирается всегда. Резервная папка с
+# записями базы — наоборот: если возврат не дошёл до конца, она остаётся, и её
+# путь уже напечатан.
+cleanup() {
+    [[ -n "$STAGE" && -d "$STAGE" ]] && rm -rf "$STAGE"
+    return 0
+}
+trap cleanup EXIT
+
 if [[ -d "$DEST" ]]; then
     echo "Скилл уже установлен: $DEST"
-    read -r -p "Перезаписать? Записи базы знаний в kb/ будут сохранены [y/N] " answer
-    [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "Отменено."; exit 0; }
-    BACKUP="$(mktemp -d)"
-    if compgen -G "$DEST/kb/INC-*.md" >/dev/null; then
-        cp "$DEST"/kb/INC-*.md "$BACKUP/" 2>/dev/null || true
-        echo "Записи базы сохранены во временную папку."
+    if [[ "$ASSUME_YES" -ne 1 ]]; then
+        if [[ ! -t 0 ]]; then
+            echo "Нет терминала для подтверждения перезаписи." >&2
+            echo "Запусти с --yes, если переустановка поверх $DEST — то, что нужно." >&2
+            exit 1
+        fi
+        read -r -p "Перезаписать? Записи базы знаний в kb/ будут сохранены [y/N] " answer
+        [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "Отменено."; exit 0; }
     fi
-    rm -rf "$DEST"
+    if compgen -G "$DEST/kb/INC-*.md" >/dev/null; then
+        BACKUP="$(mktemp -d)"
+        cp "$DEST"/kb/INC-*.md "$BACKUP/"
+        echo "Записи базы сохранены: $BACKUP"
+    fi
 fi
 
-cp -R "$SRC" "$DEST"
-chmod +x "$DEST"/scripts/*.py
+# Копия собирается рядом с местом назначения — на том же файловом томе, иначе mv
+# перестанет быть переименованием и снова станет копированием, которое может
+# сорваться на полпути. Старая установка до этого момента не тронута.
+STAGE="$(mktemp -d "$DEST_ROOT/.$NAME.XXXXXX")"
+chmod 755 "$STAGE"
 
-if [[ -n "${BACKUP:-}" ]] && compgen -G "$BACKUP/INC-*.md" >/dev/null; then
-    cp "$BACKUP"/INC-*.md "$DEST/kb/"
+# tar вместо cp -R: фильтрует артефакты разработки штатно и одинаково ведёт себя
+# на macOS и Linux. Байткод, скомпилированный чужой версией Python, в поставке
+# не нужен.
+tar -C "$SRC" --exclude='__pycache__' --exclude='*.pyc' -cf - . | tar -C "$STAGE" -xf -
+
+chmod +x "$STAGE"/scripts/*.py
+
+if [[ -n "$BACKUP" ]]; then
+    cp "$BACKUP"/INC-*.md "$STAGE/kb/"
     rm -rf "$BACKUP"
-    python3 "$DEST/scripts/kb_index.py" --kb "$DEST/kb" >/dev/null
+    BACKUP=""
     echo "Записи базы знаний возвращены на место."
 fi
 
-python3 "$DEST/scripts/kb_index.py" --kb "$DEST/kb" >/dev/null
+# Окно, в котором цели нет на месте, сжато до пары операций над готовой копией.
+rm -rf "$DEST"
+mv "$STAGE" "$DEST"
+STAGE=""
+
+# -B: иначе первый же запуск скрипта из установленной директории положит туда
+# scripts/__pycache__ — то самое, что из поставки только что исключили.
+python3 -B "$DEST/scripts/kb_index.py" --kb "$DEST/kb" >/dev/null
 
 echo
 echo "Установлено: $DEST"
