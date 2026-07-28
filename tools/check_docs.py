@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Проверка, что README.md и docs/walkthrough.md не разошлись с репозиторием.
+"""Проверка, что документация не разошлась с репозиторием.
 
 Документация устаревает молча: команда меняет флаг, capability переименовывается,
-файл в разделе «Структура» переезжает — и текст остаётся прежним, пока кто-то не
-заметит глазами. Эта проверка ловит три конкретных расхождения:
+файл в разделе «Структура» переезжает, презентация называет число, которого в коде
+уже нет — и текст остаётся прежним, пока кто-то не заметит глазами. Эта проверка
+ловит расхождения по нескольким направлениям:
 
   1. команды из блоков ``` ```bash ``` `` в README.md и docs/walkthrough.md
      действительно запускаются и завершаются нулевым кодом;
   2. перечень capability в таблице README.md совпадает с директориями
      openspec/specs/;
   3. дерево файлов в разделе «Структура» README.md совпадает с тем, что лежит в
-     репозитории.
+     репозитории;
+  4. презентация (`docs/presentation.html`) не обращается к внешним хостам, её
+     числовые утверждения подтверждены исходниками, а упомянутые файлы существуют.
 
 Блок кода пропускается, если непосредственно перед ним есть HTML-комментарий вида
 `<!-- check-docs: skip (причина) -->` — команда требует внешнего окружения
@@ -21,10 +24,13 @@
 
   python3 tools/check_docs.py
 
-Только стандартная библиотека, Python 3.8+ — как и весь остальной проект.
+Только стандартная библиотека, Python 3.8+ — как и весь остальной проект. Дальнейшие
+проверки документации добавляются сюда же отдельными функциями `check_*`, каждая —
+список строк с описанием найденных расхождений.
 """
 
 import glob
+import json
 import os
 import re
 import subprocess
@@ -33,11 +39,38 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPECS_DIR = os.path.join(REPO, 'openspec', 'specs')
 DOC_FILES = ['README.md', os.path.join('docs', 'walkthrough.md')]
+PRESENTATION = os.path.join(REPO, 'docs', 'presentation.html')
 
 SKIP_MARKER = re.compile(r'<!--\s*check-docs:\s*skip')
 FENCE_RE = re.compile(r'^```(\w*)\s*$')
 CAP_ROW_RE = re.compile(r'^\|\s*`([a-z][a-z0-9-]*)`\s*\|')
 TREE_MARKER_RE = re.compile(r'^((?:\u2502   |    )*)(\u251c\u2500\u2500 |\u2514\u2500\u2500 )?(.*)$')
+
+# протокол:// или протокол-независимая ссылка (//host/...) — обращение вовне.
+# data: URI и якоря (#slide) обращением к внешнему хосту не считаются.
+EXTERNAL_HOST_RE = re.compile(
+    r'(?:src|href)\s*=\s*["\']\s*(https?:)?//[^"\']+["\']'
+    r'|@import\s+["\']?(https?:)?//'
+    r'|url\(\s*["\']?(https?:)?//'
+    r'|https?://[^\s"\'<>]+',
+)
+
+FACTS_BLOCK_RE = re.compile(
+    r'<script[^>]*id=["\']facts["\'][^>]*>(.*?)</script>', re.DOTALL)
+FILES_BLOCK_RE = re.compile(
+    r'<script[^>]*id=["\']referenced-files["\'][^>]*>(.*?)</script>', re.DOTALL)
+
+# как проверить число из facts против исходника: source_key -> регулярка с
+# одной захватывающей группой — числовым значением.
+SOURCE_PATTERNS = {
+    'parse_logs': r"'parse_logs':\s*\{'kind':\s*'\w+',\s*'limit':\s*([\d.]+)",
+    'parse_logs_level': r"'parse_logs_level':\s*\{'kind':\s*'\w+',\s*'limit':\s*([\d.]+)",
+    'parse_logs_window': r"'parse_logs_window':\s*\{'kind':\s*'\w+',\s*'limit':\s*([\d.]+)",
+    'triage': r"'triage':\s*\{'kind':\s*'\w+',\s*'limit':\s*([\d.]+)",
+    'MAX_SUMMARY_CHARS': r'MAX_SUMMARY_CHARS\s*=\s*(\d+)',
+    'confirmed_threshold': r'подтверждено данными\*\*[^\d]*([\d.]+)',
+    'probable_threshold': r'вероятная причина\*\*[^\d]*([\d.]+)',
+}
 
 
 def read(path):
@@ -215,6 +248,92 @@ def check_structure(readme_text, failures):
                             'соответствует' % pattern)
 
 
+# ---- 4. презентация ---------------------------------------------------------
+
+def load_presentation():
+    if not os.path.isfile(PRESENTATION):
+        return None
+    return read(PRESENTATION)
+
+
+def _load_json_block(html, pattern, label):
+    m = pattern.search(html)
+    if not m:
+        return None, ['docs/presentation.html: блок %s не найден' % label]
+    try:
+        return json.loads(m.group(1)), []
+    except ValueError as exc:
+        return None, ['docs/presentation.html: блок %s: не разобрался как JSON (%s)'
+                      % (label, exc)]
+
+
+def check_presentation_external_hosts(html, failures):
+    """Презентация не должна обращаться ни к одному внешнему хосту."""
+    for m in EXTERNAL_HOST_RE.finditer(html):
+        failures.append('docs/presentation.html: обращение к внешнему хосту: %r'
+                        % m.group(0)[:80])
+
+
+def check_presentation_facts(html, failures):
+    """Каждое числовое утверждение презентации сверяется с исходником."""
+    facts, block_failures = _load_json_block(html, FACTS_BLOCK_RE, 'facts')
+    failures.extend(block_failures)
+    if facts is None:
+        return
+    for fact in facts:
+        claim = fact.get('claim', '?')
+        source_file = fact.get('source_file')
+        source_key = fact.get('source_key')
+        value = fact.get('value')
+        src_path = os.path.join(REPO, source_file) if source_file else None
+        if not source_file or not os.path.isfile(src_path):
+            failures.append('facts: источник не найден для «%s»: %s' % (claim, source_file))
+            continue
+        source_text = read(src_path)
+
+        if source_key == 'пять вызовов инструментов':
+            if 'пять вызовов инструментов' not in source_text:
+                failures.append('%s: фраза "пять вызовов инструментов" не найдена — '
+                                'утверждение «%s» не подтверждено' % (source_file, claim))
+            continue
+
+        pattern = SOURCE_PATTERNS.get(source_key)
+        if pattern is None:
+            failures.append('%s: нет способа проверить source_key=%r (claim: %s)'
+                            % (source_file, source_key, claim))
+            continue
+        m = re.search(pattern, source_text)
+        if not m:
+            failures.append('%s: значение для «%s» не найдено в источнике'
+                            % (source_file, claim))
+            continue
+        found = float(m.group(1))
+        if found != float(value):
+            failures.append('%s: расхождение для «%s»: презентация называет %s, '
+                            'источник — %s' % (source_file, claim, value, found))
+
+
+def check_presentation_referenced_files(html, failures):
+    """Все файлы репозитория, упомянутые в презентации, должны существовать."""
+    paths, block_failures = _load_json_block(html, FILES_BLOCK_RE, 'referenced-files')
+    failures.extend(block_failures)
+    if paths is None:
+        return
+    for rel in paths:
+        if not os.path.exists(os.path.join(REPO, rel)):
+            failures.append('referenced-files: файл не найден: %s' % rel)
+
+
+def check_presentation(failures):
+    html = load_presentation()
+    if html is None:
+        failures.append('docs/presentation.html: файл не найден')
+        return
+    check_presentation_external_hosts(html, failures)
+    check_presentation_facts(html, failures)
+    check_presentation_referenced_files(html, failures)
+
+
 def main(argv=None):
     failures = []
 
@@ -233,6 +352,7 @@ def main(argv=None):
 
     check_capabilities(readme_text, failures)
     check_structure(readme_text, failures)
+    check_presentation(failures)
 
     if failures:
         sys.stderr.write('Документация разошлась с репозиторием:\n\n')
@@ -240,7 +360,7 @@ def main(argv=None):
             sys.stderr.write('- %s\n' % f)
         return 1
 
-    print('README.md и docs/walkthrough.md согласованы с репозиторием.')
+    print('README.md, docs/walkthrough.md и docs/presentation.html согласованы с репозиторием.')
     return 0
 
 
