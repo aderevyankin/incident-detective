@@ -47,8 +47,7 @@
 
 ### New Capabilities
 
-_нет — требования добавляются в `project-documentation`, вводимую изменением
-`add-readme-maintenance`; это изменение архивируется после него._
+_нет — требования добавляются в существующую спеку `project-documentation`._
 
 ### Modified Capabilities
 
@@ -61,6 +60,6 @@ _нет — требования добавляются в `project-documentatio
   `incident-detective/references/*.md`, `incident-detective/kb/README.md`,
   `openspec/config.yaml` — замена копий ссылками, фактические правки.
 - `tests/run.py` — проверка синхронности `.claude/` ↔ `.qwen/`.
-- Зависимость: дельта ложится на capability из `add-readme-maintenance` — порядок
-  архивации: сначала оно, затем это изменение.
+- Внешних зависимостей нет: спека `project-documentation` уже введена архивированным
+  `add-readme-maintenance`.
 - Поведение скриптов не меняется.
