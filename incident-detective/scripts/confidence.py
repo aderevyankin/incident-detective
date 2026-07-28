@@ -128,8 +128,10 @@ def score_kb(kb, stand, service):
     # ни один вызывающий код никогда не производил
     hits = kb or []
     if not hits:
+        # подсказки нет: причина слабости — пустая выдача, и общий текст контура
+        # («запиши этот случай») её описывает точно
         return {'value': 0.0, 'notes': ['совпадений в базе нет — инцидент выглядит новым'],
-                'warnings': []}
+                'warnings': [], 'hint': None}
 
     best = hits[0]
     raw = float(best.get('score') or 0)
@@ -144,6 +146,14 @@ def score_kb(kb, stand, service):
     warnings = []
     meta = best.get('meta') or {}
 
+    # Запись нашлась, а вклад всё равно может оказаться слабым — и причина у
+    # этого каждый раз своя. Подсказку собирает тот, кто знает причину в момент
+    # оценки: разбирать потом собственные человекочитаемые строки хрупко.
+    # Отправная точка — низкая релевантность, дальше причина уточняется.
+    hint = ('запись %s нашлась, но релевантность низкая — уточни запрос или '
+            'добавь сигнатур из разбора (`kb_search.py --from-parsed ...`)'
+            % best.get('id'))
+
     # Вклад контура зависит от исхода найденной записи: подтверждённая — полный
     # вклад, непроверенная — сниженный (похожее видели, но причина не
     # подтверждена), опровергнутая — нулевой и уходит в «что настораживает», а не
@@ -153,6 +163,8 @@ def score_kb(kb, stand, service):
         notes.append('исход записи: опровергнута — вклад не засчитан')
         warnings.append('запись %s опровергнута: эта версия причины уже проверялась '
                         'и не подтвердилась' % best.get('id'))
+        hint = ('запись %s описывает уже опровергнутую версию причины — ищи другую '
+                'опору, а этот случай запиши отдельно' % best.get('id'))
         val = 0.0
     elif outcome == OUTCOME_CONFIRMED:
         notes.append('исход записи: подтверждена на практике')
@@ -160,6 +172,9 @@ def score_kb(kb, stand, service):
         val *= KB_UNVERIFIED_FACTOR
         notes.append('исход записи не проверен — вклад снижен; подтверждение '
                      'исхода записи повысит уверенность')
+        hint = ('подтверди исход записи %s, когда он станет известен '
+                '(`kb_add.py --update %s --outcome confirmed|refuted`)'
+                % (best.get('id'), best.get('id')))
 
     for key, expected, label in (('stands', stand, 'стенд'), ('services', service, 'сервис')):
         if not expected:
@@ -169,7 +184,11 @@ def score_kb(kb, stand, service):
             val *= 0.6
             warnings.append('в записи %s другой %s (%s), совпадение может быть внешним'
                             % (best.get('id'), label, ', '.join(sorted(have))))
-    return {'value': clamp(val), 'notes': notes, 'warnings': warnings}
+            # несовпадение условий ставит под сомнение само совпадение, поэтому
+            # оно важнее исхода: сначала сверить условия, потом подтверждать
+            hint = ('сверь условия: запись %s с другого %s (%s), совпадение может '
+                    'быть внешним' % (best.get('id'), label, ', '.join(sorted(have))))
+    return {'value': clamp(val), 'notes': notes, 'warnings': warnings, 'hint': hint}
 
 
 def score_code(code):
@@ -253,7 +272,9 @@ MISSING_HINT = {
     'trace': 'собрать цепочку: `trace.py --log сервис=лог --id <correlation id> --format json > /tmp/trace.json`',
 }
 
-# контур проверен, но опоры дал мало — что именно докрутить
+# Контур проверен, но опоры дал мало — что именно докрутить. Это заготовка на
+# случай, когда причина слабости одна и очевидна; контур, знающий свою причину
+# (`score_kb`), кладёт готовую подсказку в поле `hint`, и она берёт верх.
 WEAK_HINT = {
     'logs': 'единичная ошибка без повторов и всплеска мало что доказывает — '
             'расширь окно (`--since/--until`) или добавь логи остальных реплик',
@@ -282,7 +303,10 @@ def combine(scores):
         rows.append({'key': key, 'label': label, 'weight': weight,
                      'value': value, 'contribution': round(contrib, 3),
                      'notes': (item or {}).get('notes', []),
-                     'warnings': (item or {}).get('warnings', [])})
+                     'warnings': (item or {}).get('warnings', []),
+                     # причинная подсказка контура, если он её знает; иначе
+                     # берётся общая заготовка WEAK_HINT
+                     'hint': (item or {}).get('hint')})
     return clamp(total), rows
 
 
@@ -329,8 +353,10 @@ def render_md(total, rows, claim, out):
         for row in missing:
             w('- **%s** — контур не проверялся: %s\n' % (row['label'], MISSING_HINT[row['key']]))
         for row in weak:
+            # контур, знающий причину своей слабости, говорит её сам: заготовка
+            # на контур не отличает «совпадения нет» от «нашлось, но ослаблено»
             w('- **%s** (%.2f) — %s\n'
-              % (row['label'], row['value'], WEAK_HINT[row['key']]))
+              % (row['label'], row['value'], row['hint'] or WEAK_HINT[row['key']]))
         w('\n')
 
     if total >= CONFIRMED:
