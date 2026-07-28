@@ -14,7 +14,29 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kb_common import require_python; require_python()  # noqa: E402
 
-from kb_common import dump_json, kb_dir, load_incidents, now, run_script  # noqa: E402
+from kb_common import (  # noqa: E402
+    KIND_INCIDENT, KIND_SOURCE, SOURCE_FIELDS, dump_json, kb_dir, kind_of,
+    load_incidents, now, run_script,
+)
+
+
+def source_entry(inc, meta):
+    """Запись карты источников в индексе.
+
+    Поля карты кладутся в индекс целиком: выдача по карте должна собираться из
+    индекса так же, как поиск по инцидентам, — без чтения markdown-файлов.
+    """
+    entry = {
+        'sections': {},
+        'id': meta.get('id'),
+        'kind': KIND_SOURCE,
+        'title': meta.get('title'),
+        'file': os.path.basename(inc['path']),
+    }
+    for field in SOURCE_FIELDS:
+        if meta.get(field) not in (None, '', [], {}):
+            entry[field] = meta[field]
+    return entry
 
 
 def rebuild(directory=None):
@@ -26,6 +48,13 @@ def rebuild(directory=None):
     entries = []
     for inc in incidents:
         meta = inc['meta']
+        kind = kind_of(meta)
+        if kind != KIND_INCIDENT:
+            # сводки по тегам, стендам и сервисам — про разборы: карта источников
+            # описывает инфраструктуру, и её сервисы в этих счётчиках выглядели бы
+            # как пережитые инциденты
+            entries.append(source_entry(inc, meta))
+            continue
         for tag in meta.get('tags') or []:
             tags[str(tag)] += 1
         for stand in meta.get('stands') or []:
@@ -37,6 +66,9 @@ def rebuild(directory=None):
             # давать тот же ответ по индексу, что и по markdown-файлам
             'sections': {k: v for k, v in inc['sections'].items() if v},
             'id': meta.get('id'),
+            # вид записи пишется явно у всех записей: по нему поиск разводит
+            # разборы и карту, не читая markdown
+            'kind': KIND_INCIDENT,
             'title': meta.get('title'),
             'date': meta.get('date'),
             'stands': meta.get('stands') or [],

@@ -180,6 +180,7 @@ incident-detective/
 │   └── kb_common.py            общее: frontmatter, токенизация, сравнение сигнатур
 ├── templates/
 │   ├── incident.md             шаблон записи базы знаний
+│   ├── kb-source-example.md    пример записи карты источников
 │   └── postmortem.md           blameless-постмортем с «5 почему»
 └── kb/                         база знаний (markdown + генерируемый index.json)
 

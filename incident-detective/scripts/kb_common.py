@@ -37,6 +37,41 @@ def outcome_of(meta):
     val = str((meta or {}).get('outcome') or '').strip().lower()
     return val if val in OUTCOMES else OUTCOME_UNVERIFIED
 
+# Вид записи базы. Отсутствие поля читается как KIND_INCIDENT: базы, собранные
+# до появления карты источников, состоят из одних разборов, и мигрировать их
+# незачем.
+KIND_INCIDENT = 'incident'
+KIND_SOURCE = 'source'
+KINDS = (KIND_INCIDENT, KIND_SOURCE)
+
+# Поля записи карты источников: способ обращения, адрес внутри источника,
+# сработавший запрос, соответствие полей, дата подтверждения и перечень
+# проверенных и отвергнутых источников.
+SOURCE_FIELDS = ('stand', 'services', 'source', 'address', 'query', 'fields',
+                 'confirmed', 'checked')
+
+# Значения вердикта при пометке бесполезного источника.
+VERDICT_EMPTY = 'empty'
+VERDICT_UNAVAILABLE = 'unavailable'
+VERDICTS = (VERDICT_EMPTY, VERDICT_UNAVAILABLE)
+
+VERDICT_LABELS = {
+    VERDICT_EMPTY: 'пуст для этой пары',
+    VERDICT_UNAVAILABLE: 'недоступен',
+}
+
+# Через сколько дней запись карты считается требующей проверки. Лечит случай,
+# который по имени инструмента не поймать: инструмент тот же, а его
+# перенастроили. Устаревшая запись не удаляется — стоимость лишней попытки
+# меньше полной инвентаризации.
+SOURCE_STALE_DAYS = 30
+
+
+def kind_of(meta):
+    """Вид записи: явно заданный или «разбор инцидента» по умолчанию."""
+    val = str((meta or {}).get('kind') or '').strip().lower()
+    return val if val in KINDS else KIND_INCIDENT
+
 # Вывод скриптов едет в контекст агента и остаётся там до конца разбора: чем он
 # больше, тем медленнее каждый следующий шаг. Предел общий для всех скриптов,
 # на машинный вывод (`--format json`) не распространяется — тот пишется в файл.
@@ -228,6 +263,48 @@ def now():
                 'невоспроизводимым молча.' % (ENV_NOW, raw))
     _NOW.append(value)
     return value
+
+
+def days_since(date_text, when=None):
+    """Сколько дней прошло с даты `YYYY-MM-DD` до «сейчас».
+
+    None — даты нет или она не разобралась: это не ноль дней, и выдавать её за
+    свежую нельзя. Отрицательного возраста не бывает: дата из будущего читается
+    как сегодняшняя.
+    """
+    raw = str(date_text or '').strip()
+    if not raw:
+        return None
+    try:
+        recorded = datetime.strptime(raw, '%Y-%m-%d')
+    except ValueError:
+        return None
+    return max(0, ((when or now()) - recorded).days)
+
+
+def source_freshness(meta, when=None):
+    """(возраст записи карты в днях, требует ли проверки).
+
+    Возраст считается от даты последнего подтверждения. Записи без даты
+    подтверждения доверия не заслуживают — (None, True).
+    """
+    age = days_since((meta or {}).get('confirmed'), when)
+    if age is None:
+        return None, True
+    return age, age > SOURCE_STALE_DAYS
+
+
+def mark_freshness(mark, when=None):
+    """(возраст пометки бесполезности в днях, перестала ли она исключать источник).
+
+    Пометка стареет по тому же сроку, что и запись карты: инструмент могли
+    починить или перенастроить, и вечное исключение из перебора превратилось бы
+    во враньё.
+    """
+    age = days_since((mark or {}).get('date'), when)
+    if age is None:
+        return None, True
+    return age, age > SOURCE_STALE_DAYS
 
 
 def _flag_names(argv):
@@ -463,15 +540,15 @@ def project_kb_dir(start=None):
 def kb_is_empty(directory):
     """Нет ли в директории записей.
 
-    Признак — наличие `INC-*.md`, а не самой директории: пустая директория
-    приезжает вместе со скиллом и выбором расположения не является.
+    Признак — наличие `INC-*.md` или `SRC-*.md`, а не самой директории: пустая
+    директория приезжает вместе со скиллом и выбором расположения не является.
     """
     try:
         names = os.listdir(directory)
     except OSError:
         return True
     for name in names:
-        if name.upper().startswith('INC-') and name.lower().endswith('.md'):
+        if name.upper().startswith(('INC-', 'SRC-')) and name.lower().endswith('.md'):
             return False
     return True
 
@@ -645,11 +722,62 @@ def _unquote(val):
     return val
 
 
+def _split_top_level(text):
+    """Разбивает по запятым верхнего уровня: кавычки и вложенные скобки целы.
+
+    Нужно из-за записи карты: `source: {kind: mcp, server: kibana-mcp}` и список
+    пометок `checked: [{...}, {...}]` наивным `split(',')` рвутся посередине.
+    """
+    parts = []
+    buf = []
+    depth = 0
+    quote = ''
+    for ch in text:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ''
+            continue
+        if ch in '"\'':
+            quote = ch
+        elif ch in '[{':
+            depth += 1
+        elif ch in ']}':
+            depth -= 1
+        elif ch == ',' and depth <= 0:
+            parts.append(''.join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append(''.join(buf))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _parse_value(val):
+    """Значение фронтматтера: вложенный словарь, список или скаляр."""
+    val = val.strip()
+    if val.startswith('{') and val.endswith('}'):
+        return _parse_inline_map(val)
+    if val.startswith('[') and val.endswith(']'):
+        return _parse_inline_list(val)
+    return _unquote(val)
+
+
+def _parse_inline_map(val):
+    out = {}
+    for item in _split_top_level(val.strip()[1:-1]):
+        key, sep, inner = item.partition(':')
+        if not sep:
+            continue
+        out[key.strip()] = _parse_value(inner)
+    return out
+
+
 def _parse_inline_list(val):
     inner = val.strip()[1:-1].strip()
     if not inner:
         return []
-    return [_unquote(p) for p in re.split(r',\s*', inner) if p.strip()]
+    return [_parse_value(p) for p in _split_top_level(inner)]
 
 
 def parse_frontmatter(text):
@@ -675,42 +803,59 @@ def parse_frontmatter(text):
         if not m:
             continue
         key, val = m.group(1), m.group(2).strip()
-        if val.startswith('[') and val.endswith(']'):
-            meta[key] = _parse_inline_list(val)
-        elif val == '':
+        if val == '':
             meta[key] = []
         else:
-            meta[key] = _unquote(val)
+            meta[key] = _parse_value(val)
     for field in LIST_FIELDS:
-        if field in meta and not isinstance(meta[field], list):
+        if field in meta and not isinstance(meta[field], (list, dict)):
             raw = str(meta[field])
             meta[field] = [p.strip() for p in raw.split(',') if p.strip()]
     return meta, body
 
 
+def _fmt_scalar(text):
+    text = str(text)
+    if text == '' or any(ch in text for ch in ':#[]{},') or text != text.strip():
+        return '"%s"' % text.replace('"', "'")
+    return text
+
+
+def _fmt_value(val):
+    """Инлайн-запись значения: словарь, список или скаляр."""
+    if isinstance(val, dict):
+        return '{%s}' % ', '.join('%s: %s' % (k, _fmt_value(v)) for k, v in val.items())
+    if isinstance(val, list):
+        return '[%s]' % ', '.join(_fmt_value(v) for v in val)
+    return _fmt_scalar(val)
+
+
 def dump_frontmatter(meta):
     lines = ['---']
-    order = ['id', 'title', 'date', 'stands', 'services', 'tags', 'severity',
-             'status', 'outcome', 'outcome_date', 'reuse_count', 'reused_at',
-             'files', 'commits', 'related', 'signatures']
+    order = ['id', 'kind', 'title', 'date', 'stand', 'stands', 'services', 'tags',
+             'severity', 'status', 'outcome', 'outcome_date', 'reuse_count', 'reused_at',
+             'files', 'commits', 'related', 'signatures',
+             'source', 'address', 'query', 'fields', 'confirmed', 'checked']
     keys = [k for k in order if k in meta] + [k for k in meta if k not in order]
     for key in keys:
         val = meta[key]
-        if isinstance(val, list):
+        if isinstance(val, dict):
+            lines.append('%s: %s' % (key, _fmt_value(val)))
+        elif isinstance(val, list):
             if not val:
                 continue
-            if key == 'signatures' or any(len(str(v)) > 40 or ',' in str(v) for v in val):
+            if any(isinstance(v, (dict, list)) for v in val):
+                # список пометок карты: разбивать его на блок незачем — он
+                # читается целиком и правится целиком
+                lines.append('%s: %s' % (key, _fmt_value(val)))
+            elif key == 'signatures' or any(len(str(v)) > 40 or ',' in str(v) for v in val):
                 lines.append('%s:' % key)
                 for item in val:
                     lines.append('  - "%s"' % str(item).replace('"', "'"))
             else:
                 lines.append('%s: [%s]' % (key, ', '.join(str(v) for v in val)))
         else:
-            text = str(val)
-            if any(ch in text for ch in ':#[]') or text != text.strip():
-                lines.append('%s: "%s"' % (key, text.replace('"', "'")))
-            else:
-                lines.append('%s: %s' % (key, text))
+            lines.append('%s: %s' % (key, _fmt_scalar(val)))
     lines.append('---')
     return '\n'.join(lines)
 
@@ -853,6 +998,15 @@ def next_id(incidents, when=None):
         if m and '%s-%s' % (m.group(1), m.group(2)) == '%04d-%02d' % (when.year, when.month):
             used.append(int(m.group(3)))
     return '%s-%03d' % (prefix, (max(used) + 1) if used else 1)
+
+
+def source_entry_id(stand, service):
+    """Идентификатор записи карты по паре «стенд + сервис».
+
+    Он вычислимый, а не порядковый: одна и та же пара всегда даёт один id, и
+    повторная запись обновляет существующую запись вместо создания дубля.
+    """
+    return 'SRC-%s-%s' % (slugify(stand, 24), slugify(service, 24))
 
 
 def slugify(text, limit=40):

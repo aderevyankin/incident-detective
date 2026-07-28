@@ -34,8 +34,8 @@ import confidence  # noqa: E402
 import kb_search  # noqa: E402
 import parse_logs as pl  # noqa: E402
 from kb_common import (  # noqa: E402
-    DEFAULT_MAX_LINES, LEVELS, MAX_SUMMARY_CHARS, dump_json, kb_dir, load_incidents_fast,
-    run_script, tokenize,
+    DEFAULT_MAX_LINES, KIND_INCIDENT, LEVELS, MAX_SUMMARY_CHARS, dump_json, kb_dir,
+    kind_of, load_incidents_fast, run_script, tokenize,
 )
 
 
@@ -93,10 +93,16 @@ def stage_kb(args, parsed, out_dir):
     """Поиск похожих случаев по сигнатурам из логов."""
     stage = Stage('kb', 'База знаний')
     directory = kb_dir(args.kb)
-    incidents, warning = load_incidents_fast(directory)
+    entries, warning = load_incidents_fast(directory)
     if warning:
         sys.stderr.write('warning: %s\n' % warning)
+    # в базе лежат записи двух видов; контур сравнивает разборы, а записи карты
+    # источников не разбор — они не ранжируются и не идут в счёт
+    incidents = [e for e in entries if kind_of(e['meta']) == KIND_INCIDENT]
     if not incidents:
+        if entries:
+            return stage.skip('разборов инцидентов в базе нет (записей карты '
+                              'источников: %d): %s' % (len(entries), directory))
         return stage.skip('база знаний пуста или не найдена: %s' % directory)
 
     # запрос и ранжирование — общие с kb_search.py: логику не дублируем, а

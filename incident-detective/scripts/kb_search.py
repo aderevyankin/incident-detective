@@ -17,9 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
-    DISTINGUISHERS_SECTION, MAX_SUMMARY_CHARS, OUTCOME_CONFIRMED, OUTCOME_REFUTED,
-    OUTCOME_UNVERIFIED, dump_json, kb_dir, load_incidents_fast, load_parsed, now, outcome_of,
-    run_script, signature_similarity, signatures_from_parsed, tokenize,
+    DISTINGUISHERS_SECTION, KIND_INCIDENT, KIND_SOURCE, MAX_SUMMARY_CHARS,
+    OUTCOME_CONFIRMED, OUTCOME_REFUTED, OUTCOME_UNVERIFIED, SOURCE_STALE_DAYS,
+    VERDICT_LABELS, days_since, dump_json, kb_dir, kind_of, load_incidents_fast,
+    load_parsed, mark_freshness, outcome_of, run_script, signature_similarity,
+    signatures_from_parsed, source_freshness, tokenize,
 )
 
 OUTCOME_LABELS = {
@@ -47,14 +49,7 @@ SIGNATURE_WEIGHT = 14.0
 
 def record_age_days(meta):
     """Возраст записи в днях от `date` до «сейчас» — None, если дата не разобралась."""
-    raw = str(meta.get('date') or '').strip()
-    if not raw:
-        return None
-    try:
-        recorded = datetime.strptime(raw, '%Y-%m-%d')
-    except ValueError:
-        return None
-    return max(0, (now() - recorded).days)
+    return days_since(meta.get('date'))
 
 
 def files_changed_since(repo, files, date):
@@ -105,6 +100,14 @@ def score_incident(inc, query_tokens, signatures, filters):
             continue
         have = {str(v).lower() for v in (meta.get(key) or [])}
         if not have & {v.lower() for v in values}:
+            return None
+
+    # cross-stand поиск: та же сигнатура, но не на текущем стенде. Записи без
+    # стенда остаются в выдаче — «не тот стенд» про них неизвестно
+    excluded = {str(v).lower() for v in (filters.get('exclude_stand') or [])}
+    if excluded:
+        stands = {str(v).lower() for v in (meta.get('stands') or [])}
+        if stands and stands <= excluded:
             return None
 
     if signatures:
@@ -171,6 +174,11 @@ def rank(incidents, query_tokens, signatures, filters, min_score):
     """Ранжирует записи базы по совпадению — общая логика kb_search и triage."""
     hits = []
     for inc in incidents:
+        if kind_of(inc['meta']) != KIND_INCIDENT:
+            # записи карты в поиск по инцидентам не попадают ни отсюда, ни из
+            # triage.py: отсев здесь, а не у вызывающего, — чтобы выдача по
+            # симптому не засорилась инфраструктурой в одном из контуров
+            continue
         result = score_incident(inc, query_tokens, signatures, filters)
         if result and result['score'] >= min_score:
             hits.append(result)
@@ -184,8 +192,20 @@ def rank(incidents, query_tokens, signatures, filters, min_score):
     return hits
 
 
-def render_md(hits, out, query_desc, total, budget=MAX_SUMMARY_CHARS, repo=None):
+def render_md(hits, out, query_desc, total, budget=MAX_SUMMARY_CHARS, repo=None,
+              exclude_stand=None):
     if not hits:
+        if exclude_stand:
+            # Пустая выдача cross-stand поиска — это не «в базе ничего нет»:
+            # записи по исключённому стенду в базе как раз могут быть, и путать
+            # эти два ответа значит терять след регрессии
+            out.write('# База знаний: на других стендах не встречалась\n\n'
+                      'Запрос: %s\nИсключены стенды: %s\nВсего записей в базе: %d\n\n'
+                      'Совпадений по остальным стендам нет — за пределы %s '
+                      'эта ошибка пока не выходила.\n'
+                      % (query_desc, ', '.join(exclude_stand), total,
+                         ', '.join(exclude_stand)))
+            return
         out.write('# База знаний: совпадений нет\n\n'
                   'Запрос: %s\nВсего записей в базе: %d\n\n'
                   'Инцидент, похоже, новый — после разбора имеет смысл его записать '
@@ -286,6 +306,108 @@ def render_list(incidents, out):
             ', '.join(str(t) for t in (meta.get('tags') or []))))
 
 
+# --------------------------------------------------------------------------
+# Карта источников
+# --------------------------------------------------------------------------
+
+
+def match_sources(sources, stands, services):
+    """Записи карты по стенду и сервису — фильтры необязательные и независимые."""
+    want_stand = {str(v).lower() for v in (stands or [])}
+    want_service = {str(v).lower() for v in (services or [])}
+    out = []
+    for entry in sources:
+        meta = entry['meta']
+        if want_stand and str(meta.get('stand') or '').lower() not in want_stand:
+            continue
+        if want_service:
+            have = {str(v).lower() for v in (meta.get('services') or [])}
+            if not have & want_service:
+                continue
+        out.append(entry)
+    return out
+
+
+def _pairs(value):
+    """`{k: v}` в человеческую строку; строку оставляет как есть."""
+    if isinstance(value, dict):
+        return ', '.join('%s=%s' % (k, v) for k, v in value.items())
+    if isinstance(value, list):
+        return ', '.join(str(v) for v in value)
+    return str(value or '')
+
+
+def render_source(entry, out):
+    meta = entry['meta']
+    out.write('## %s\n' % meta.get('id'))
+    bits = []
+    if meta.get('stand'):
+        bits.append('стенд: %s' % meta['stand'])
+    if meta.get('services'):
+        bits.append('сервисы: %s' % ', '.join(str(v) for v in meta['services']))
+    if bits:
+        out.write('- %s\n' % ' · '.join(bits))
+    if meta.get('source'):
+        out.write('- источник: %s\n' % _pairs(meta['source']))
+    if meta.get('address'):
+        out.write('- адрес: %s\n' % _pairs(meta['address']))
+    if meta.get('query'):
+        out.write('- запрос: `%s`\n' % meta['query'])
+    if meta.get('fields'):
+        out.write('- соответствие полей: %s\n' % _pairs(meta['fields']))
+    age, stale = source_freshness(meta)
+    out.write('- подтверждён: %s%s\n'
+              % (meta.get('confirmed') or 'дата не указана',
+                 ' (возраст %d дн.)' % age if age is not None else ''))
+    if stale:
+        out.write('- **требует проверки**: подтверждение старше %d дн. — источник '
+                  'пробуем, но при первой неудаче идём в инвентаризацию, а не '
+                  'повторяем попытки\n' % SOURCE_STALE_DAYS)
+    for mark in meta.get('checked') or []:
+        if not isinstance(mark, dict):
+            continue
+        mark_age, expired = mark_freshness(mark)
+        tail = ''
+        if mark_age is not None:
+            tail = ', %d дн. назад' % mark_age
+        note = mark.get('note')
+        out.write('- отвергнут: %s — %s (%s%s)%s%s\n'
+                  % (mark.get('source') or '?',
+                     VERDICT_LABELS.get(str(mark.get('verdict') or '').lower(),
+                                        mark.get('verdict') or 'без вердикта'),
+                     mark.get('date') or 'дата не указана', tail,
+                     ': ' + str(note) if note else '',
+                     ' — **пометка устарела, источник снова считается непроверенным**'
+                     if expired else ''))
+    out.write('- файл: `%s`\n\n' % entry['path'])
+
+
+def render_sources(entries, out, desc, total):
+    if not entries:
+        out.write('# Карта источников: записей нет\n\n'
+                  'Запрос: %s\nЗаписей карты в базе: %d\n\n'
+                  'Эта пара стенда и сервиса картой не покрыта — нужен обычный перебор '
+                  'каналов, а его результат стоит записать (`kb_add.py --kind source`).\n'
+                  % (desc, total))
+        return
+    out.write('# Карта источников: %d из %d\n\nЗапрос: %s\n\n'
+              % (len(entries), total, desc))
+    for entry in entries:
+        render_source(entry, out)
+    out.write('Карта — адресация, а не данные: логов в ней нет, за ними надо сходить '
+              'в записанный источник.\n')
+
+
+def render_sources_json(entries, out):
+    dump_json([{
+        'id': e['meta'].get('id'),
+        'path': e['path'],
+        'meta': e['meta'],
+        'age_days': source_freshness(e['meta'])[0],
+        'stale': source_freshness(e['meta'])[1],
+    } for e in entries], out)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Поиск похожих инцидентов в локальной базе знаний.')
     ap.add_argument('query', nargs='*', help='слова симптома')
@@ -295,6 +417,10 @@ def main(argv=None):
     ap.add_argument('--stand', action='append', help='фильтр по стенду')
     ap.add_argument('--service', action='append', help='фильтр по сервису')
     ap.add_argument('--tag', action='append', help='фильтр по тегу')
+    ap.add_argument('--exclude-stand', action='append',
+                    help='исключить стенд из выдачи — та же сигнатура на других стендах')
+    ap.add_argument('--sources', action='store_true',
+                    help='карта источников: откуда брались логи для стенда и сервиса')
     ap.add_argument('--top', type=int, default=5)
     ap.add_argument('--min-score', type=float, default=1.0)
     ap.add_argument('--kb', help='директория базы знаний')
@@ -306,14 +432,36 @@ def main(argv=None):
     directory = kb_dir(args.kb)
     # поиск вызывается на каждом разборе, а база растёт: читаем индекс, а не
     # тысячу markdown-файлов подряд
-    incidents, warning = load_incidents_fast(directory)
+    entries, warning = load_incidents_fast(directory)
     out = sys.stdout
     if warning:
         sys.stderr.write('warning: %s\n' % warning)
 
-    if not incidents:
+    if not entries:
         out.write('База знаний пуста или не найдена: %s\n'
                   'Первую запись можно создать через kb_add.py\n' % directory)
+        return 0
+
+    # Виды записей не смешиваются: поиск по симптому не должен выдавать
+    # инфраструктурную запись, а запрос карты — разбор
+    incidents = [e for e in entries if kind_of(e['meta']) == KIND_INCIDENT]
+    sources = [e for e in entries if kind_of(e['meta']) == KIND_SOURCE]
+
+    if args.sources:
+        found = match_sources(sources, args.stand, args.service)
+        desc = ' · '.join(filter(None, [
+            'стенд: %s' % ', '.join(args.stand) if args.stand else '',
+            'сервис: %s' % ', '.join(args.service) if args.service else '',
+        ])) or '(вся карта)'
+        if args.format == 'json':
+            render_sources_json(found, out)
+        else:
+            render_sources(found, out, desc, len(sources))
+        return 0
+
+    if not incidents:
+        out.write('База знаний: разборов инцидентов нет (записей карты источников: %d).\n'
+                  'Первую запись можно создать через kb_add.py\n' % len(sources))
         return 0
 
     if args.list:
@@ -332,7 +480,8 @@ def main(argv=None):
         ap.error('нужен текст запроса, --signature или --from-parsed')
 
     query_tokens = tokenize(' '.join(query_parts))
-    filters = {'stand': args.stand, 'service': args.service, 'tag': args.tag}
+    filters = {'stand': args.stand, 'service': args.service, 'tag': args.tag,
+               'exclude_stand': args.exclude_stand}
 
     hits = rank(incidents, query_tokens, signatures, filters, args.min_score)
     hits = hits[:args.top]
@@ -344,7 +493,8 @@ def main(argv=None):
     if args.format == 'json':
         render_json(hits, out)
     else:
-        render_md(hits, out, desc, len(incidents), repo=args.repo)
+        render_md(hits, out, desc, len(incidents), repo=args.repo,
+                  exclude_stand=args.exclude_stand)
     return 0
 
 
