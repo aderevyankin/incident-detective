@@ -51,6 +51,13 @@ def rebuild(directory=None):
             'tags': meta.get('tags') or [],
             'severity': meta.get('severity'),
             'status': meta.get('status'),
+            # отсутствующий исход не подставляется здесь: индекс — зеркало
+            # markdown, «не проверена» по умолчанию трактуется на чтении
+            # (kb_common.outcome_of), а не при сборке
+            'outcome': meta.get('outcome'),
+            'outcome_date': meta.get('outcome_date'),
+            'reuse_count': meta.get('reuse_count'),
+            'reused_at': meta.get('reused_at'),
             'signatures': meta.get('signatures') or [],
             'files': meta.get('files') or [],
             'symptoms': symptoms[:300],

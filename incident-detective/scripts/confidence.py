@@ -32,7 +32,11 @@ if sys.version_info < (3, 8):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import parse_logs as pl  # noqa: E402
-from kb_common import run_script  # noqa: E402
+from kb_common import OUTCOME_CONFIRMED, OUTCOME_REFUTED, outcome_of, run_script  # noqa: E402
+
+# Вклад контура снижается для непроверенной записи, а не отменяется: она всё же
+# означает, что похожее видели, но подтверждением причины не является.
+KB_UNVERIFIED_FACTOR = 0.6
 
 WEIGHTS = [
     ('logs', 'Логи', 0.30),
@@ -140,6 +144,24 @@ def score_kb(kb, stand, service):
 
     warnings = []
     meta = best.get('meta') or {}
+
+    # Вклад контура зависит от исхода найденной записи: подтверждённая — полный
+    # вклад, непроверенная — сниженный (похожее видели, но причина не
+    # подтверждена), опровергнутая — нулевой и уходит в «что настораживает», а не
+    # засчитывается как совпадение.
+    outcome = outcome_of(meta)
+    if outcome == OUTCOME_REFUTED:
+        notes.append('исход записи: опровергнута — вклад не засчитан')
+        warnings.append('запись %s опровергнута: эта версия причины уже проверялась '
+                        'и не подтвердилась' % best.get('id'))
+        val = 0.0
+    elif outcome == OUTCOME_CONFIRMED:
+        notes.append('исход записи: подтверждена на практике')
+    else:
+        val *= KB_UNVERIFIED_FACTOR
+        notes.append('исход записи не проверен — вклад снижен; подтверждение '
+                     'исхода записи повысит уверенность')
+
     for key, expected, label in (('stands', stand, 'стенд'), ('services', service, 'сервис')):
         if not expected:
             continue

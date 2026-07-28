@@ -7,6 +7,10 @@ services: [service-name]
 tags: [tag1, tag2]
 severity: medium
 status: resolved
+outcome: unverified
+outcome_date: YYYY-MM-DD
+reuse_count: 0
+reused_at: YYYY-MM-DD
 files: [src/path/file.py]
 commits: [a1b2c3d]
 signatures:
@@ -36,6 +40,12 @@ signatures:
 ## Проверка
 
 Как убедиться, что починилось: лог, метрика, запрос.
+
+## Отличительные признаки
+
+Необязательно. Чем текущий случай отличается от похожего, несмотря на совпадение
+сигнатуры, — конкретное проверяемое наблюдение («если в логе есть строка о блокировке
+таблицы — это другой инцидент»), а не указание сверить условия.
 
 ## Заметки
 
