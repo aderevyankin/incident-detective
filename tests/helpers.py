@@ -8,9 +8,12 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
+from datetime import datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -75,13 +78,72 @@ def run_json(case, name, args, now=NOW, env=None, cwd=None):
         raise AssertionError('%s выдал не JSON: %s\n%s' % (name, exc, out[:2000]))
 
 
-def parsed_to_file(case, tmpdir, name, sources, args=(), now=NOW):
-    """Разбор логов, сохранённый в файл, — вход для остальных контуров."""
-    payload = run_json(case, 'parse_logs.py', list(sources) + list(args), now=now)
+def json_to_file(case, tmpdir, name, script, args, now=NOW):
+    """Запускает скрипт, сохраняет JSON-вывод в файл — вход для остальных контуров."""
+    payload = run_json(case, script, args, now=now)
     path = os.path.join(tmpdir, name)
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(payload, fh, ensure_ascii=False)
     return payload, path
+
+
+def parsed_to_file(case, tmpdir, name, sources, args=(), now=NOW):
+    """Частный случай json_to_file: разбор логов parse_logs.py."""
+    return json_to_file(case, tmpdir, name, 'parse_logs.py', list(sources) + list(args), now=now)
+
+
+def make_repo(tmpdir, now=NOW):
+    """Детерминированный git-репозиторий для проверки code_hints.py.
+
+    Два коммита с зафиксированными датами (из `now`) и файл с классом
+    исключения по образцу фикстур. Возвращает словарь с путями к репозиторию
+    и файлу, номером строки класса исключения и его именем.
+    """
+    repo = os.path.join(tmpdir, 'repo')
+    os.makedirs(os.path.join(repo, 'svc'))
+    rel_path = os.path.join('svc', 'pay.py')
+    exc_name = 'PaymentPoolExhaustedError'
+    abs_path = os.path.join(repo, rel_path)
+    with open(abs_path, 'w', encoding='utf-8') as fh:
+        fh.write('"""Оплата."""\n\n\nclass %s(Exception):\n'
+                 '    """Пул соединений с платёжным шлюзом исчерпан."""\n' % exc_name)
+    lineno = 4
+
+    when = datetime.strptime(now, '%Y-%m-%d %H:%M:%S')
+    first_date = (when - timedelta(hours=20)).strftime('%Y-%m-%d %H:%M:%S +0000')
+    second_date = (when - timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S +0000')
+
+    def run_git(args, when=None):
+        env = os.environ.copy()
+        env['GIT_AUTHOR_NAME'] = 'incident-detective-tests'
+        env['GIT_AUTHOR_EMAIL'] = 'tests@example.invalid'
+        env['GIT_COMMITTER_NAME'] = 'incident-detective-tests'
+        env['GIT_COMMITTER_EMAIL'] = 'tests@example.invalid'
+        if when:
+            env['GIT_AUTHOR_DATE'] = when
+            env['GIT_COMMITTER_DATE'] = when
+        subprocess.run(['git', '-C', repo] + list(args), env=env, check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    run_git(['init', '-q'])
+    run_git(['add', '.'])
+    run_git(['commit', '-q', '-m', 'add payment module'], when=first_date)
+
+    with open(abs_path, 'a', encoding='utf-8') as fh:
+        fh.write('\n\ndef charge():\n    raise %s()\n' % exc_name)
+    run_git(['add', '.'])
+    run_git(['commit', '-q', '-m', 'raise on pool exhaustion'], when=second_date)
+
+    return {'repo': repo, 'file': rel_path, 'lineno': lineno, 'exc_name': exc_name}
+
+
+def has_git():
+    try:
+        proc = subprocess.run(['git', '--version'], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+        return proc.returncode == 0
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -184,8 +246,15 @@ class ScriptCase(unittest.TestCase):
 
     maxDiff = 4000
 
-    def run_script(self, name, args, **kw):
-        return run(name, args, **kw)
+    # Псевдонимы, а не переизложение: единственная реализация — run/run_json
+    # выше, здесь только доступ к ней как к методу.
+    run_script = staticmethod(run)
 
     def json_of(self, name, args, **kw):
         return run_json(self, name, args, **kw)
+
+    def tmpdir(self):
+        """Временная директория с очисткой по завершении теста."""
+        path = tempfile.mkdtemp(prefix='triage-tests-')
+        self.addCleanup(shutil.rmtree, path, True)
+        return path

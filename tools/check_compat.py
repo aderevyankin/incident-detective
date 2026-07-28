@@ -50,14 +50,16 @@ def check(directory, minimum):
     return names, failures
 
 
-def main():
+def main(argv=None):
+    """`argv=None` — как обычная точка входа (из sys.argv); `argv=[]` — для
+    вызова из tests/run.py: печать несовместимости остаётся только здесь."""
     parser = argparse.ArgumentParser(
         description='Проверяет, что скрипты скилла разбираются минимальной версией Python.')
     parser.add_argument('--dir', default=SCRIPTS_DIR,
                         help='директория со скриптами (по умолчанию incident-detective/scripts)')
     parser.add_argument('--min', type=parse_version, default=DEFAULT_MIN,
                         help='минимальная версия, MAJOR.MINOR (по умолчанию 3.8)')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # feature_version умеет проверять только на версию не выше текущей.
     if args.min > sys.version_info[:2]:

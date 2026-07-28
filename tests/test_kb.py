@@ -4,7 +4,6 @@
 import json
 import os
 import shutil
-import tempfile
 import unittest
 
 import helpers
@@ -17,8 +16,7 @@ DISK = 'INC-2026-05-003'
 class Search(ScriptCase):
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = self.tmpdir()
 
     def test_free_text_finds_expected_record(self):
         hits = self.json_of('kb_search.py',
@@ -53,8 +51,7 @@ class Search(ScriptCase):
 class Index(ScriptCase):
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = self.tmpdir()
         self.kb = os.path.join(self.tmp, 'kb')
         shutil.copytree(helpers.KB, self.kb)
 
@@ -89,6 +86,73 @@ class Index(ScriptCase):
             'kb_search.py', ['таймаут', 'пул', '--kb', self.kb, '--format', 'json'])
         self.assertEqual(code, 0, err)
         self.assertIn('индекс базы знаний устарел', err)
+
+
+class Add(ScriptCase):
+    """kb_add.py по результату: реальная запись, а не только --dry-run."""
+
+    def setUp(self):
+        self.tmp = self.tmpdir()
+        self.kb = os.path.join(self.tmp, 'kb')
+
+    def _add(self, title, **kw):
+        args = ['--title', title, '--kb', self.kb]
+        for flag, value in kw.items():
+            args += ['--' + flag.replace('_', '-'), value]
+        code, out, err = self.run_script('kb_add.py', args)
+        self.assertEqual(code, 0, err)
+        return out
+
+    def _record_path(self, out):
+        for line in out.split('\n'):
+            if line.startswith('Запись '):
+                return line.split(': ', 1)[1].strip()
+        raise AssertionError('строка "Запись ..." не найдена в выводе:\n%s' % out)
+
+    def test_written_record_reads_back(self):
+        out = self._add('Пул соединений исчерпан', service='payment-api',
+                        root_cause='утечка соединений')
+        path = self._record_path(out)
+        self.assertTrue(os.path.exists(path), 'файл записи не создан: %s' % path)
+        with open(path, 'r', encoding='utf-8') as fh:
+            text = fh.read()
+        self.assertIn('title: Пул соединений исчерпан', text)
+        self.assertIn('date: 2026-07-28', text)
+        self.assertIn('services: [payment-api]', text)
+        self.assertIn('утечка соединений', text)
+
+        # обратное чтение через kb_search.py — не только на диске, но и разбирается
+        self.assertIn('id: INC-2026-07-001', out)
+        hits = self.json_of('kb_search.py', ['утечка', 'соединений', '--kb', self.kb])
+        self.assertTrue(hits, 'записанная запись не находится поиском')
+        self.assertEqual(hits[0]['id'], 'INC-2026-07-001')
+
+    def test_index_is_updated_after_write(self):
+        self._add('Первая запись')
+        with open(os.path.join(self.kb, 'index.json'), 'r', encoding='utf-8') as fh:
+            index = json.load(fh)
+        self.assertEqual(index['count'], 1)
+        self.assertEqual(index['incidents'][0]['id'], 'INC-2026-07-001')
+
+    def test_second_record_same_month_gets_next_id(self):
+        first = self._add('Первая запись')
+        second = self._add('Вторая запись')
+        self.assertIn('INC-2026-07-001', first)
+        self.assertIn('INC-2026-07-002', second)
+        with open(os.path.join(self.kb, 'index.json'), 'r', encoding='utf-8') as fh:
+            index = json.load(fh)
+        self.assertEqual(index['count'], 2)
+
+    def test_other_records_are_left_untouched(self):
+        os.makedirs(self.kb)
+        other = os.path.join(self.kb, 'INC-2026-05-003-disk-full.md')
+        shutil.copy(os.path.join(helpers.KB, 'INC-2026-05-003-disk-full.md'), other)
+        with open(other, 'rb') as fh:
+            before = fh.read()
+        self._add('Новая запись')
+        with open(other, 'rb') as fh:
+            after = fh.read()
+        self.assertEqual(before, after, 'чужая запись изменилась при добавлении новой')
 
 
 if __name__ == '__main__':

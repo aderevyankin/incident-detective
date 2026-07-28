@@ -2,8 +2,6 @@
 """Устойчивость ко входу: скрипт объясняется, а не падает трассировкой."""
 
 import os
-import shutil
-import tempfile
 import unittest
 
 import helpers
@@ -60,8 +58,7 @@ class Orchestrator(ScriptCase):
     """triage.py проходит цепочку целиком и не падает на пропущенных контурах."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = self.tmpdir()
         self.repo = os.path.join(self.tmp, 'repo')
         os.makedirs(self.repo)
 

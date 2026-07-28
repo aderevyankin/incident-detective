@@ -10,8 +10,6 @@
 
 import json
 import os
-import shutil
-import tempfile
 import unittest
 
 import helpers
@@ -56,8 +54,7 @@ class MixedZones(ScriptCase):
     """Смешение записей с зоной и без неё называется, а не чинится молча."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = self.tmpdir()
 
     def write_json(self, name, payload):
         path = os.path.join(self.tmp, name)
@@ -151,14 +148,12 @@ class Clocks(ScriptCase):
 
 
 class StableOrder(ScriptCase):
-    """Повторный запуск на тех же данных даёт тот же порядок."""
+    """Порядок событий при равном времени не меняется между запусками.
 
-    def test_timeline_order_is_the_same_twice(self):
-        args = ['--log', 'alpha=' + ALPHA, '--log', 'beta=' + BETA]
-        first = self.json_of('timeline.py', args)
-        second = self.json_of('timeline.py', args)
-        self.assertEqual([(e['ts'], e['source'], e['text']) for e in first],
-                         [(e['ts'], e['source'], e['text']) for e in second])
+    Обычный повторный запуск с теми же данными — не отдельный случай здесь,
+    он проверяется одним параметризованным тестом в test_parse.py (Determinism),
+    вместе с parse_logs, trace, kb_search и confidence.
+    """
 
     def test_equal_times_keep_their_order(self):
         """Два источника с совпадающим временем не меняются местами между запусками."""

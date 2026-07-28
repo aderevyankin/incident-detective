@@ -42,6 +42,39 @@ class ExpectedFixtures(ScriptCase):
                          'нет ожидаемого результата для фикстур: %s' % forgotten)
 
 
+class Determinism(ScriptCase):
+    """Один и тот же вход даёт один и тот же ответ — на каждом контуре разбора.
+
+    Раньше это проверялось четырьмя отдельными тестами (parse_logs, trace,
+    timeline дважды) одним и тем же паттерном; здесь — один параметризованный,
+    и заодно накрыты kb_search и confidence, которые раньше не проверялись.
+    """
+
+    def setUp(self):
+        self.tmp = self.tmpdir()
+        _parsed, self.parsed_path = helpers.parsed_to_file(
+            self, self.tmp, 'parsed.json', [helpers.log('single_service.log')])
+
+    def test_same_input_gives_same_output(self):
+        cases = [
+            ('parse_logs.py', [helpers.log('single_service.log'),
+                               helpers.log('mixed_formats.log')]),
+            ('trace.py', ['--log', 'gateway=' + helpers.log('gateway.log'),
+                         '--log', 'payment=' + helpers.log('payment.log'),
+                         '--id', 'req-7f3a9c']),
+            ('timeline.py', ['--log', 'payment=' + helpers.log('single_service.log')]),
+            ('kb_search.py', ['таймаут', 'пул', 'соединений', 'payment-api',
+                              '--kb', helpers.KB]),
+            ('confidence.py', ['--parsed', self.parsed_path]),
+        ]
+        for script, args in cases:
+            with self.subTest(script=script):
+                first = self.json_of(script, args)
+                second = self.json_of(script, args)
+                self.assertEqual(json.dumps(first, sort_keys=True, ensure_ascii=False),
+                                 json.dumps(second, sort_keys=True, ensure_ascii=False))
+
+
 class OutputContract(ScriptCase):
 
     def test_new_field_does_not_break_check(self):
@@ -54,14 +87,6 @@ class OutputContract(ScriptCase):
             group['новое_поле'] = None
         helpers.check_expected(self, parsed, expected['expect'],
                                'single_service.log + новое поле')
-
-    def test_repeated_run_gives_same_result(self):
-        """Два прогона на одних данных дают один и тот же ответ."""
-        args = [helpers.log('single_service.log'), helpers.log('mixed_formats.log')]
-        first = self.json_of('parse_logs.py', args)
-        second = self.json_of('parse_logs.py', args)
-        self.assertEqual(json.dumps(first, sort_keys=True, ensure_ascii=False),
-                         json.dumps(second, sort_keys=True, ensure_ascii=False))
 
     def test_runs_from_any_directory(self):
         """Результат не зависит от того, откуда запущен скрипт."""
