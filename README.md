@@ -9,13 +9,17 @@ Qwen Code и других агентов, так что скилл перено�
 | Контур | Вопрос | Скрипты |
 |---|---|---|
 | **База знаний** | Мы это уже видели? | `kb_search.py`, `kb_add.py`, `kb_index.py` |
-| **Логи** | Что происходило на самом деле? | `parse_logs.py`, `timeline.py` |
+| **Логи** | Что происходило на самом деле? | `parse_logs.py`, `timeline.py`, `trace.py` |
 | **Код** | Где ломается и из-за чего? | `code_hints.py` |
 
 Связывает контуры **сигнатура** — устойчивый отпечаток ошибки (класс исключения,
 HTTP-статус, шаблон сообщения). Логи её порождают, база знаний по ней ищет, код по ней
 локализуется, новая запись базы её сохраняет. Так разбор второго такого же инцидента
 начинается не с нуля, а с готового ответа.
+
+Перед выводом `confidence.py` считает, на скольких контурах он стоит, и переводит это в
+уровень: подтверждено данными / вероятная причина / гипотеза. Ни один контур в одиночку
+до «подтверждено» не дотягивает — одна опора причину не доказывает.
 
 ## Установка
 
@@ -58,11 +62,14 @@ incident-triage/
 ├── references/
 │   ├── log-sources.md          discovery MCP и запрос логов у пользователя
 │   ├── parsing.md              форматы, эвристики, как читать сводку
+│   ├── correlation.md          сквозной id, чтение цепочки, расхождение часов
 │   ├── kb-format.md            формат записи базы знаний
 │   └── code-analysis.md        от ошибки к месту в коде, связки «симптом → что смотреть»
 ├── scripts/
 │   ├── parse_logs.py           парсер неструктурированных логов → сводка + сигнатуры
 │   ├── timeline.py             единая хронология из нескольких источников + git
+│   ├── trace.py                цепочка запроса по correlation id между сервисами
+│   ├── confidence.py           уверенность вывода по числу сошедшихся контуров
 │   ├── code_hints.py           стектрейсы → файлы проекта, git blame, коммиты в окне
 │   ├── kb_search.py            поиск по тексту и по сигнатурам
 │   ├── kb_add.py               создание и дополнение записей
@@ -93,6 +100,13 @@ python3 $S/code_hints.py --from-parsed /tmp/parsed.json --repo .
 python3 $S/timeline.py --parsed api=/tmp/parsed.json --repo . \
         --event "2026-07-28 12:20|деплой 1.24"
 
+python3 $S/trace.py --log gateway=gw.log --log payment=pay.log --top
+python3 $S/trace.py --log gateway=gw.log --log payment=pay.log --id 7f3a-9c
+python3 $S/trace.py --log gateway=gw.log --log payment=pay.log --check-clocks
+
+python3 $S/confidence.py --parsed /tmp/parsed.json --kb /tmp/kb.json \
+        --code /tmp/code.json --stand stage --service payment-api
+
 python3 $S/kb_add.py --title "..." --stand stage --root-cause "..." \
         --from-parsed /tmp/parsed.json --file src/db/pool.py
 ```
@@ -120,7 +134,7 @@ npx @fission-ai/openspec show log-parsing    # требования одной c
 npx @fission-ai/openspec validate --specs --strict
 ```
 
-Восемь capability в `openspec/specs/`:
+Capability в `openspec/specs/`:
 
 | Capability | О чём |
 |---|---|
@@ -128,6 +142,8 @@ npx @fission-ai/openspec validate --specs --strict
 | `log-ingestion` | поиск подключённых источников логов, запрос данных у пользователя |
 | `log-parsing` | разбор неструктурированных логов, шаблонизация, сигнатуры |
 | `incident-timeline` | сведение источников в одну хронологию |
+| `correlation-tracing` | цепочка запроса по correlation id, точка обрыва, часы стендов |
+| `confidence-scoring` | уверенность вывода по сошедшимся контурам |
 | `knowledge-base` | формат записей, поиск по тексту и сигнатурам, пополнение |
 | `code-correlation` | стектрейсы → код, git-история, правила предложений по правкам |
 | `incident-reporting` | структура вывода, разделение факта и гипотезы, постмортем |
