@@ -5,10 +5,8 @@
 того, как её увидит пользователь.
 """
 
-import json
 import os
 import shutil
-import tempfile
 import unittest
 
 import helpers
@@ -18,8 +16,7 @@ from helpers import ScriptCase
 class Contours(ScriptCase):
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = self.tmpdir()
         self.parsed, self.parsed_path = helpers.parsed_to_file(
             self, self.tmp, 'parsed.json', [helpers.log('single_service.log')])
 
@@ -30,12 +27,9 @@ class Contours(ScriptCase):
                     self.lonely_kb)
 
     def _kb_json(self, kb_dir, name):
-        hits = self.json_of('kb_search.py',
-                            ['--from-parsed', self.parsed_path, '--kb', kb_dir])
-        path = os.path.join(self.tmp, name)
-        with open(path, 'w', encoding='utf-8') as fh:
-            json.dump(hits, fh, ensure_ascii=False)
-        return hits, path
+        return helpers.json_to_file(
+            self, self.tmp, name, 'kb_search.py',
+            ['--from-parsed', self.parsed_path, '--kb', kb_dir])
 
     def test_no_match_no_code_stays_hypothesis(self):
         hits, kb_path = self._kb_json(self.lonely_kb, 'kb-none.json')

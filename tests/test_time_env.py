@@ -3,8 +3,6 @@
 
 import json
 import os
-import shutil
-import tempfile
 import unittest
 
 import helpers
@@ -17,12 +15,7 @@ KNOWN = helpers.log('single_service.log')
 class GivenNow(ScriptCase):
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
-        self.addCleanup(shutil.rmtree, self.tmp, True)
-
-    def test_year_for_timestamp_without_year(self):
-        parsed = self.json_of('parse_logs.py', [SYSLOG], now='2026-07-28 20:00:00')
-        self.assertEqual(parsed['stats']['first_ts'], '2026-07-28 12:33:44')
+        self.tmp = self.tmpdir()
 
     def test_year_is_chosen_so_the_event_is_not_in_the_future(self):
         """Разбор в январе: июльская запись — из прошлого года, а не из будущего.

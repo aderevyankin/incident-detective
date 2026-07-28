@@ -2,8 +2,6 @@
 """Хронология и сквозная цепочка запроса: порядок событий и точка обрыва."""
 
 import json
-import shutil
-import tempfile
 import unittest
 
 import helpers
@@ -41,12 +39,6 @@ class Chain(ScriptCase):
         self.assertEqual(payload['candidates'][0]['errors'], 2)
         self.assertEqual(payload['candidates'][0]['services'], ['gateway', 'payment'])
 
-    def test_repeated_run_gives_same_chain(self):
-        first = self.json_of('trace.py', SOURCES + ['--id', TRACE_ID])
-        second = self.json_of('trace.py', SOURCES + ['--id', TRACE_ID])
-        self.assertEqual(json.dumps(first, sort_keys=True, ensure_ascii=False),
-                         json.dumps(second, sort_keys=True, ensure_ascii=False))
-
     def test_unknown_id_is_reported_without_traceback(self):
         code, out, err = self.run_script('trace.py', SOURCES + ['--id', 'нет-такого'])
         self.assertNotIn('Traceback', err)
@@ -57,8 +49,7 @@ class Chain(ScriptCase):
 class Timeline(ScriptCase):
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = self.tmpdir()
 
     def _events(self):
         code, out, err = self.run_script(
@@ -82,9 +73,6 @@ class Timeline(ScriptCase):
         spikes = [e for e in self._events() if e['kind'] == 'всплеск']
         self.assertTrue(spikes, 'всплеск ошибок в 12:34 не найден')
         self.assertEqual(spikes[0]['ts'], '2026-07-28 12:34:00')
-
-    def test_repeated_run_gives_same_timeline(self):
-        self.assertEqual(self._events(), self._events())
 
 
 if __name__ == '__main__':

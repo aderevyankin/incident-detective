@@ -8,8 +8,6 @@
 
 import json
 import os
-import shutil
-import tempfile
 import unittest
 
 import helpers
@@ -21,8 +19,7 @@ KNOWN = helpers.log('single_service.log')
 class Telemetry(ScriptCase):
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tmp = self.tmpdir()
         self.file = os.path.join(self.tmp, 'telemetry.log')
 
     def _on(self, path=None):

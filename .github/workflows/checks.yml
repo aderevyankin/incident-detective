@@ -4,16 +4,28 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
-    # 22.04, потому что на ней доступен Python 3.8 — минимальная версия, которую
-    # обещает скилл. Прогон на более новом интерпретаторе не заметил бы, что в
-    # скрипт заехала возможность языка, которой на стенде нет.
+    # 22.04, потому что на ней доступен Python 3.8 — минимальная заявленная версия.
+    # Матрица гоняет ещё и 3.12 — современную версию, которая как раз у
+    # большинства пользователей: обратная совместимость не заметна на 3.8 одном.
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.12']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.8'
+          python-version: ${{ matrix.python-version }}
       - name: Прогон проверок
         run: python3 tests/run.py

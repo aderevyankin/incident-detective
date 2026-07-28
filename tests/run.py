@@ -32,23 +32,19 @@ sys.path.insert(0, os.path.join(REPO, 'tools'))
 
 
 def check_compatibility():
-    """Разбираются ли скрипты минимальной заявленной версией Python."""
+    """Разбираются ли скрипты минимальной заявленной версией Python.
+
+    Печать — целиком в check_compat.main(), здесь только код возврата: 0
+    (совместимо), 1 (несовместимо) и 2 (интерпретатор старше заявленного
+    минимума — проверка неполна, но это не провал прогона).
+    """
     import check_compat
 
-    minimum = check_compat.DEFAULT_MIN
-    if minimum > sys.version_info[:2]:
-        print('— совместимость: пропущена, нужен интерпретатор не старше %d.%d'
-              % minimum)
+    code = check_compat.main([])
+    if code == 2:
+        sys.stderr.write('— совместимость: прогон неполный (см. сообщение выше)\n')
         return True
-    names, failures = check_compat.check(check_compat.SCRIPTS_DIR, minimum)
-    if failures:
-        print('Синтаксис несовместим с Python %d.%d:' % minimum)
-        for name, message in failures:
-            print('  %s: %s' % (name, message))
-        return False
-    print('— совместимость: %d скриптов разбираются Python %d.%d'
-          % (len(names), minimum[0], minimum[1]))
-    return True
+    return code == 0
 
 
 def main(argv):
