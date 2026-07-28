@@ -32,7 +32,7 @@
 #### Scenario: Скилл доступен обоими способами
 
 - **WHEN** скилл установлен
-- **THEN** он вызывается и моделью автоматически, и пользователем через `/incident-triage`
+- **THEN** он вызывается и моделью автоматически, и пользователем через `/incident-detective`
 - **AND** поля `user-invocable` и `disable-model-invocation` не отключают ни один из
   способов
 
@@ -56,7 +56,7 @@
 
 - **WHEN** в инструкциях приводятся команды запуска скриптов
 - **THEN** путь обозначается как `$SKILL_DIR`
-- **AND** поясняется, что обычно это `~/.qwen/skills/incident-triage`
+- **AND** поясняется, что обычно это `~/.qwen/skills/incident-detective`
 
 ### Requirement: Установка
 
@@ -68,12 +68,12 @@
 #### Scenario: Личная установка
 
 - **WHEN** установщик запущен без аргументов
-- **THEN** скилл копируется в `~/.qwen/skills/incident-triage`
+- **THEN** скилл копируется в `~/.qwen/skills/incident-detective`
 
 #### Scenario: Проектная установка
 
 - **WHEN** установщик запущен с `--project`
-- **THEN** скилл копируется в `.qwen/skills/incident-triage` текущего проекта
+- **THEN** скилл копируется в `.qwen/skills/incident-detective` текущего проекта
 - **AND** может быть закоммичен и роздан команде через git
 
 #### Scenario: Переустановка поверх существующей

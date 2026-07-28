@@ -1,7 +1,7 @@
 schema: spec-driven
 
 context: |
-  Проект: incident-triage — скилл разбора багов и инцидентов на стендах.
+  Проект: incident-detective — скилл разбора багов и инцидентов на стендах.
 
   Целевая платформа: Qwen Code CLI. Формат — Agent Skills: директория со SKILL.md
   (YAML-фронтматтер: name, description, priority), плюс references/, scripts/,

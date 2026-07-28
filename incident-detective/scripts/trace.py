@@ -21,24 +21,28 @@ import json
 import os
 import sys
 from collections import Counter, OrderedDict
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 # Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
 if sys.version_info < (3, 8):
-    sys.stderr.write('incident-triage: нужен Python 3.8 или новее, запущен %s (%s)\n'
+    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
                      % (sys.version.split()[0], sys.executable))
     sys.exit(2)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import parse_logs as pl  # noqa: E402
-from kb_common import run_script  # noqa: E402
+from kb_common import (TIME_SCALE, apply_offset,  # noqa: E402
+                       estimate_clock_skew, parse_offset_arg, render_clock_findings,
+                       run_script, sort_key)
 
-# ниже этого не считаем расхождение часов подозрительным: сетевые задержки
-# и разное время записи в лог дают до секунды сами по себе
-CLOCK_MIN_SHIFT = 2.0
-# сколько общих запросов нужно, чтобы вывод о часах вообще имел смысл
-CLOCK_MIN_TRACES = 3
+
+# Смешение записей с зоной и без неё чинить нечем: узнать зону наивных записей
+# неоткуда. Значит, о нём говорится прямо — и с последствием, а не только с фактом.
+MIXED_ZONES_NOTE = (
+    '⚠ Часть источников пишет время с указанной зоной, часть — без неё. Порядок '
+    'хопов между этими группами может быть неверен, а с ним и вывод о точке '
+    'обрыва: прежде чем заводить баг, сверь зоны источников.\n')
 
 
 class Hop(object):
@@ -93,16 +97,6 @@ def parse_source_arg(item):
     return label, path
 
 
-def parse_offset_arg(item):
-    label, sep, val = item.partition('=')
-    if not sep:
-        raise SystemExit('Сдвиг задаётся как "сервис=секунды": %r' % item)
-    try:
-        return label, float(val)
-    except ValueError:
-        raise SystemExit('Не разобрал секунды в %r' % item)
-
-
 def read_service(label, path, args):
     """Читает один источник, возвращает записи с меткой сервиса."""
     sources = pl.expand_sources([path])
@@ -110,11 +104,10 @@ def read_service(label, path, args):
         print('warning: источник не найден: %s' % path, file=sys.stderr)
         return []
     offset = args.offsets.get(label, 0.0)
-    shift = timedelta(seconds=offset) if offset else None
     out = []
     for rec in pl.read_records(sources, args.encoding, args.max_lines):
-        if shift and rec.ts:
-            rec.ts = rec.ts + shift
+        if offset and rec.ts:
+            rec.ts = apply_offset(rec.ts, offset)
         if args.since and rec.ts and rec.ts < args.since:
             continue
         if args.until and rec.ts and rec.ts > args.until:
@@ -162,7 +155,7 @@ def collect_candidates(pairs):
 def rank_candidates(stats, limit=10):
     """Интереснее тот запрос, где больше ошибок и больше задетых сервисов."""
     items = list(stats.values())
-    items.sort(key=lambda it: (-it['errors'], -len(it['services']), -it['records']))
+    items.sort(key=lambda it: (-it['errors'], -len(it['services']), -it['records'], it['id']))
     return items[:limit]
 
 
@@ -181,7 +174,7 @@ def build_chain(pairs, trace_id):
         if hop is None:
             hop = hops[label] = Hop(label)
         hop.add(rec)
-    ordered = sorted(hops.values(), key=lambda h: (h.first or datetime.max))
+    ordered = sorted(hops.values(), key=lambda h: sort_key(h.first, h.service, 0))
     return ordered, matched
 
 
@@ -196,9 +189,9 @@ def chain_findings(hops):
     for hop in hops:
         for rec in hop.records:
             if pl.LEVEL_ORD.get(rec.level or 'INFO', 2) >= pl.LEVEL_ORD['ERROR']:
-                errors.append((rec.ts or datetime.max, rec.line_no, hop.service, rec))
-    errors.sort(key=lambda e: (e[0], e[1]))
-    first_error = {'service': errors[0][2], 'rec': errors[0][3]} if errors else None
+                errors.append((rec.ts, hop.service, rec.line_no, rec))
+    errors.sort(key=lambda e: sort_key(e[0], e[1], e[2]))
+    first_error = {'service': errors[0][1], 'rec': errors[0][3]} if errors else None
 
     slowest = None
     for prev, cur in zip(hops, hops[1:]):
@@ -215,23 +208,13 @@ def chain_findings(hops):
 # --------------------------------------------------------------------------
 
 
-def median(values):
-    vals = sorted(values)
-    if not vals:
-        return 0.0
-    mid = len(vals) // 2
-    if len(vals) % 2:
-        return vals[mid]
-    return (vals[mid - 1] + vals[mid]) / 2.0
-
-
 def check_clocks(pairs):
-    """Оценивает расхождение часов между сервисами по общим запросам.
+    """Расхождение часов между сервисами по общим запросам.
 
-    Для пары сервисов берём разницу первых отметок одного и того же запроса.
-    Если разница по всем запросам держится около одного значения (разброс мал),
-    это похоже на систематический сдвиг часов, а не на живую задержку: реальная
-    задержка гуляет от запроса к запросу.
+    Общая точка сравнения — id запроса: берём самую раннюю отметку каждого
+    сервиса по этому запросу. Сама оценка — общая с хронологией
+    (`kb_common.estimate_clock_skew`): два инструмента не должны давать разных
+    ответов об одних и тех же источниках.
     """
     per_trace = {}
     for label, rec in pairs:
@@ -241,29 +224,14 @@ def check_clocks(pairs):
         firsts = per_trace.setdefault(key, {})
         if label not in firsts or rec.ts < firsts[label]:
             firsts[label] = rec.ts
+    return estimate_clock_skew(per_trace)
 
-    deltas = {}
-    for firsts in per_trace.values():
-        labels = sorted(firsts)
-        for i, a in enumerate(labels):
-            for b in labels[i + 1:]:
-                deltas.setdefault((a, b), []).append((firsts[b] - firsts[a]).total_seconds())
 
-    findings = []
-    for (a, b), vals in sorted(deltas.items()):
-        if len(vals) < CLOCK_MIN_TRACES:
-            continue
-        med = median(vals)
-        spread = median([abs(v - med) for v in vals])
-        if abs(med) < CLOCK_MIN_SHIFT:
-            continue
-        # разброс мал относительно самого сдвига — значит он постоянный
-        systematic = spread <= max(0.25 * abs(med), 0.5)
-        findings.append({
-            'from': a, 'to': b, 'median': round(med, 2), 'spread': round(spread, 2),
-            'traces': len(vals), 'systematic': systematic,
-        })
-    return findings, len(per_trace)
+def mixed_zones(pairs):
+    """Попали ли в цепочку записи и с известной зоной, и без неё."""
+    known = any(rec.tz_known for _label, rec in pairs if rec.ts)
+    unknown = any(not rec.tz_known for _label, rec in pairs if rec.ts)
+    return known and unknown
 
 
 # --------------------------------------------------------------------------
@@ -287,7 +255,8 @@ def render_candidates(items, out, total, sources):
           'или `rqUID`. Без сквозного id цепочку между сервисами не собрать — '
           'разбирай по времени через `timeline.py`.\n')
         return
-    w('Источники: %s · всего запросов с id: %d\n\n' % (', '.join(sources), total))
+    w('Источники: %s · всего запросов с id: %d · времена в %s\n\n'
+      % (', '.join(sources), total, TIME_SCALE))
     w('| id | ошибок | записей | сервисы | длительность |\n')
     w('|---|---|---|---|---|\n')
     for it in items:
@@ -313,7 +282,14 @@ def render_chain(trace_id, hops, matched, out, args):
     w('записей: %d · сервисов: %d' % (len(matched), len(hops)))
     if start and end:
         w(' · %s → %s (%s)' % (pl.fmt_ts(start), pl.fmt_ts(end), fmt_gap(end - start)))
+    w('\n\nВремена хопов и паузы между ними — в %s.' % TIME_SCALE)
+    applied = sorted((label, secs) for label, secs in args.offsets.items() if secs)
+    if applied:
+        w(' Применена заданная поправка: %s — время сдвинуто, в логе его не было.'
+          % ', '.join('%s %+.2f с' % (label, secs) for label, secs in applied))
     w('\n\n')
+    if mixed_zones(matched):
+        w(MIXED_ZONES_NOTE + '\n')
 
     w('| # | сервис | первая запись | внутри | пауза от предыдущего | уровень | ошибок | статусы |\n')
     w('|---|---|---|---|---|---|---|---|\n')
@@ -360,44 +336,29 @@ def render_chain(trace_id, hops, matched, out, args):
     limit = args.records
     if limit:
         w('## Записи (%d из %d)\n\n' % (min(limit, len(matched)), len(matched)))
-        rows = sorted(matched, key=lambda p: (p[1].ts or datetime.max, p[1].line_no))
+        rows = sorted(matched, key=lambda p: sort_key(p[1].ts, p[0], p[1].line_no))
         for label, rec in rows[:limit]:
             w('%s  %-5s  **%s**  _%s:%d_\n' % (pl.fmt_ts(rec.ts), rec.level or '-',
                                                label, rec.origin, rec.line_no))
             w('```\n%s\n```\n\n' % rec.raw_text[:1200])
 
 
-def render_clocks(findings, traces, out):
+def render_clocks(findings, traces, out, mixed=False):
     w = out.write
     w('# Проверка часов между сервисами\n\n')
-    if traces < CLOCK_MIN_TRACES:
-        w('Общих запросов слишком мало (%d) — сравнивать нечего.\n' % traces)
-        return
-    if not findings:
-        w('Расхождений больше %.0f с не видно (%d общих запросов). '
-          'Время сервисов можно считать сопоставимым.\n' % (CLOCK_MIN_SHIFT, traces))
-        return
-    w('Общих запросов: %d\n\n' % traces)
-    for f in findings:
-        kind = ('похоже на сдвиг часов' if f['systematic']
-                else 'разброс большой — скорее реальная задержка, чем часы')
-        w('- **%s → %s**: медиана %+.2f с, разброс ±%.2f с по %d запросам — %s\n'
-          % (f['from'], f['to'], f['median'], f['spread'], f['traces'], kind))
-    systematic = [f for f in findings if f['systematic']]
-    if systematic:
-        f = systematic[0]
-        w('\nПоправка применяется вручную, чтобы в цепочке не появилось '
-          'подогнанное время:\n\n```\n--offset %s=%.2f\n```\n' % (f['to'], -f['median']))
-    w('\nОценка косвенная: сдвиг часов и стабильно одинаковая задержка выглядят '
-      'одинаково. Сверься с ntp/системным временем стендов, прежде чем опираться '
-      'на неё в выводе.\n')
+    if mixed:
+        w(MIXED_ZONES_NOTE + '\n')
+    render_clock_findings(findings, traces, w, unit='общих запросов')
 
 
-def chain_to_json(trace_id, hops, matched):
+def chain_to_json(trace_id, hops, matched, offsets=None):
     first_error, slowest = chain_findings(hops)
     return {
         'id': trace_id,
         'records': len(matched),
+        'time_scale': TIME_SCALE,
+        'mixed_timezones': mixed_zones(matched),
+        'offsets_applied': {k: v for k, v in (offsets or {}).items() if v},
         'hops': [{
             'service': h.service,
             'first': pl.fmt_ts(h.first) if h.first else None,
@@ -463,18 +424,20 @@ def main(argv=None):
 
     if args.check_clocks:
         findings, traces = check_clocks(pairs)
+        mixed = mixed_zones(pairs)
         if args.format == 'json':
-            json.dump({'traces': traces, 'clock_findings': findings}, out,
+            json.dump({'traces': traces, 'clock_findings': findings,
+                       'time_scale': TIME_SCALE, 'mixed_timezones': mixed}, out,
                       ensure_ascii=False, indent=2)
             out.write('\n')
         else:
-            render_clocks(findings, traces, out)
+            render_clocks(findings, traces, out, mixed)
         return 0
 
     if args.id:
         hops, matched = build_chain(pairs, args.id)
         if args.format == 'json':
-            json.dump(chain_to_json(args.id, hops, matched), out,
+            json.dump(chain_to_json(args.id, hops, matched, args.offsets), out,
                       ensure_ascii=False, indent=2)
             out.write('\n')
         else:
@@ -486,6 +449,8 @@ def main(argv=None):
     if args.format == 'json':
         json.dump({
             'total_traces': len(stats),
+            'time_scale': TIME_SCALE,
+            'mixed_timezones': mixed_zones(pairs),
             'candidates': [{
                 'id': it['id'], 'records': it['records'], 'errors': it['errors'],
                 'services': sorted(it['services']),

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Общие утилиты базы знаний: чтение/запись markdown-записей, токенизация, скоринг."""
+"""Общее для скриптов скилла: работа со временем, база знаний, токенизация, скоринг."""
 
 import json
 import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_KB = os.path.join(SKILL_DIR, 'kb')
@@ -135,6 +135,128 @@ def run_script(main, path, argv=None):
         code = 130
     record_run(os.path.basename(path), argv, code)
     return code
+
+
+# --------------------------------------------------------------------------
+# Работа с уже разобранным временем
+# --------------------------------------------------------------------------
+
+# Одна шкала на весь вывод: время, показанное без указания шкалы, не с чем
+# сверить — ни с Kibana, ни с текстом алерта. Разбор смещений живёт в
+# parse_logs.py (он запускается первым и над сырыми строками), здесь — только то,
+# что работает над уже разобранным временем.
+TIME_SCALE = 'UTC'
+
+# ниже этого не считаем расхождение часов подозрительным: сетевые задержки
+# и разное время записи в лог дают до секунды сами по себе
+CLOCK_MIN_SHIFT = 2.0
+# сколько общих точек нужно, чтобы вывод о часах вообще имел смысл
+CLOCK_MIN_POINTS = 3
+
+
+def median(values):
+    vals = sorted(values)
+    if not vals:
+        return 0.0
+    mid = len(vals) // 2
+    if len(vals) % 2:
+        return vals[mid]
+    return (vals[mid - 1] + vals[mid]) / 2.0
+
+
+def sort_key(ts, source, seq):
+    """Устойчивый ключ порядка событий.
+
+    При равном времени порядок определяется источником и порядковым номером
+    записи, а не порядком обхода словарей и файлов. Вывод «первым был X» не
+    должен меняться от запуска к запуску: его читают как факт.
+    """
+    return (ts if ts is not None else datetime.max, str(source or ''), seq)
+
+
+def apply_offset(ts, seconds):
+    """Сдвиг времени на явно заданную величину. Ноль и None ничего не меняют."""
+    if ts is None or not seconds:
+        return ts
+    return ts + timedelta(seconds=seconds)
+
+
+def parse_offset_arg(item):
+    """'payment=-2.5' -> ('payment', -2.5)."""
+    label, sep, val = item.partition('=')
+    if not sep:
+        raise SystemExit('Сдвиг задаётся как "источник=секунды": %r' % item)
+    try:
+        return label, float(val)
+    except ValueError:
+        raise SystemExit('Не разобрал секунды в %r' % item)
+
+
+def estimate_clock_skew(observations):
+    """Оценивает расхождение часов между источниками по общим точкам.
+
+    `observations` — словарь «общая точка → {источник: самое раннее время}». Для
+    цепочки запроса общая точка — id запроса, для хронологии — один и тот же
+    шаблон сообщения. Математика одна и та же, и живёт она здесь, чтобы два
+    инструмента не давали разных ответов об одних и тех же источниках.
+
+    Если разница по всем точкам держится около одного значения (разброс мал), это
+    похоже на систематический сдвиг часов, а не на живую задержку: реальная
+    задержка гуляет от точки к точке.
+
+    Возвращает (список находок, число общих точек).
+    """
+    deltas = {}
+    for firsts in observations.values():
+        labels = sorted(firsts)
+        for i, a in enumerate(labels):
+            for b in labels[i + 1:]:
+                if firsts[a] is None or firsts[b] is None:
+                    continue
+                deltas.setdefault((a, b), []).append((firsts[b] - firsts[a]).total_seconds())
+
+    findings = []
+    for (a, b), vals in sorted(deltas.items()):
+        if len(vals) < CLOCK_MIN_POINTS:
+            continue
+        med = median(vals)
+        spread = median([abs(v - med) for v in vals])
+        if abs(med) < CLOCK_MIN_SHIFT:
+            continue
+        # разброс мал относительно самого сдвига — значит он постоянный
+        systematic = spread <= max(0.25 * abs(med), 0.5)
+        findings.append({
+            'from': a, 'to': b, 'median': round(med, 2), 'spread': round(spread, 2),
+            'traces': len(vals), 'systematic': systematic,
+        })
+    return findings, len(observations)
+
+
+def render_clock_findings(findings, points, write, unit='общих запросов'):
+    """Вывод оценки расхождения часов — общий для цепочки и хронологии."""
+    if points < CLOCK_MIN_POINTS:
+        write('%s слишком мало (%d) — сравнивать нечего.\n'
+              % (unit.capitalize(), points))
+        return
+    if not findings:
+        write('Расхождений больше %.0f с не видно (%d %s). '
+              'Время источников можно считать сопоставимым.\n'
+              % (CLOCK_MIN_SHIFT, points, unit))
+        return
+    write('%s: %d\n\n' % (unit.capitalize(), points))
+    for f in findings:
+        kind = ('похоже на сдвиг часов' if f['systematic']
+                else 'разброс большой — скорее реальная задержка, чем часы')
+        write('- **%s → %s**: медиана %+.2f с, разброс ±%.2f с по %d точкам — %s\n'
+              % (f['from'], f['to'], f['median'], f['spread'], f['traces'], kind))
+    systematic = [f for f in findings if f['systematic']]
+    if systematic:
+        f = systematic[0]
+        write('\nПоправка применяется вручную, чтобы в выводе не появилось '
+              'подогнанное время:\n\n```\n--offset %s=%.2f\n```\n' % (f['to'], -f['median']))
+    write('\nОценка косвенная: сдвиг часов и стабильно одинаковая задержка выглядят '
+          'одинаково. Сверься с ntp/системным временем стендов, прежде чем опираться '
+          'на неё в выводе.\n')
 
 
 # --------------------------------------------------------------------------

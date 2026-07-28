@@ -61,15 +61,15 @@ user ivan.petrov@bank.ru` — уходит в поле «Симптомы» ро
 
 ## Impact
 
-- `incident-triage/scripts/kb_common.py`: общая функция очистки и перечень правил — здесь, а не в
+- `incident-detective/scripts/kb_common.py`: общая функция очистки и перечень правил — здесь, а не в
   `kb_add.py`.
-- `incident-triage/scripts/kb_add.py`: переход на общую функцию, уведомление о срабатывании,
+- `incident-detective/scripts/kb_add.py`: переход на общую функцию, уведомление о срабатывании,
   отражение маскирования в `--dry-run`.
-- `incident-triage/SKILL.md`: шаг 8 и шаг 9 — очистка перед записью и перед показом текста тикета;
+- `incident-detective/SKILL.md`: шаг 8 и шаг 9 — очистка перед записью и перед показом текста тикета;
   раздел «Границы» — уточнение, что именно вычищается.
-- `incident-triage/references/kb-format.md`, `references/next-step.md`: описание маскирования и
+- `incident-detective/references/kb-format.md`, `references/next-step.md`: описание маскирования и
   перечня немаскируемого.
-- `incident-triage/templates/incident.md`, `templates/postmortem.md`: указание, что сохраняемый
+- `incident-detective/templates/incident.md`, `templates/postmortem.md`: указание, что сохраняемый
   текст проходит очистку.
 - `tests/`: фикстуры с заведомо поддельными персональными данными и секретами; проверки на то,
   что маскируется, и на то, что не маскируется.

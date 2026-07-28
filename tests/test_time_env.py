@@ -24,10 +24,19 @@ class GivenNow(ScriptCase):
         parsed = self.json_of('parse_logs.py', [SYSLOG], now='2026-07-28 20:00:00')
         self.assertEqual(parsed['stats']['first_ts'], '2026-07-28 12:33:44')
 
-    def test_another_day_moves_the_year(self):
-        """То же самое в другой год: год берётся из заданного времени."""
+    def test_year_is_chosen_so_the_event_is_not_in_the_future(self):
+        """Разбор в январе: июльская запись — из прошлого года, а не из будущего.
+
+        Прежнее поведение подставляло год «сейчас» безусловно и отправляло
+        декабрьский инцидент, разбираемый в январе, на одиннадцать месяцев вперёд.
+        """
         parsed = self.json_of('parse_logs.py', [SYSLOG], now='2031-01-05 08:00:00')
-        self.assertEqual(parsed['stats']['first_ts'], '2031-07-28 12:33:44')
+        self.assertEqual(parsed['stats']['first_ts'], '2030-07-28 12:33:44')
+
+    def test_substituted_year_is_named_as_an_assumption(self):
+        parsed = self.json_of('parse_logs.py', [SYSLOG], now='2031-01-05 08:00:00')
+        notes = ' '.join(parsed['stats'].get('time_assumptions') or [])
+        self.assertIn('2030', notes, 'подставленный год не назван в допущениях')
 
     def test_window_without_date_counts_from_given_now(self):
         parsed = self.json_of('parse_logs.py', [KNOWN, '--since', '12:34'])

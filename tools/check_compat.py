@@ -21,7 +21,7 @@ import os
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS_DIR = os.path.join(REPO, 'incident-triage', 'scripts')
+SCRIPTS_DIR = os.path.join(REPO, 'incident-detective', 'scripts')
 DEFAULT_MIN = (3, 8)
 
 
@@ -54,7 +54,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Проверяет, что скрипты скилла разбираются минимальной версией Python.')
     parser.add_argument('--dir', default=SCRIPTS_DIR,
-                        help='директория со скриптами (по умолчанию incident-triage/scripts)')
+                        help='директория со скриптами (по умолчанию incident-detective/scripts)')
     parser.add_argument('--min', type=parse_version, default=DEFAULT_MIN,
                         help='минимальная версия, MAJOR.MINOR (по умолчанию 3.8)')
     args = parser.parse_args()

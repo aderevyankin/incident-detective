@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Установка скилла incident-triage для Qwen Code CLI.
+# Установка скилла incident-detective для Qwen Code CLI.
 #
 #   ./install.sh              — личный скилл (~/.qwen/skills/)
 #   ./install.sh --project    — проектный скилл (./.qwen/skills/), едет в git с командой
@@ -9,8 +9,8 @@
 
 set -euo pipefail
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/incident-triage"
-NAME="incident-triage"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/incident-detective"
+NAME="incident-detective"
 
 if [[ "${1:-}" == "--project" ]]; then
     DEST_ROOT="$(pwd)/.qwen/skills"
@@ -72,9 +72,9 @@ echo "Область: $SCOPE"
 echo
 echo "Дальше:"
 echo "  1. Перезапусти Qwen Code — скиллы читаются при старте."
-echo "  2. Проверь: /skills — в списке должен быть incident-triage."
+echo "  2. Проверь: /skills — в списке должен быть incident-detective."
 echo "  3. Скилл включается сам, когда речь заходит о баге или инциденте."
-echo "     Принудительно: /incident-triage"
+echo "     Принудительно: /incident-detective"
 echo
 echo "База знаний: $DEST/kb — пока расположение не выбрано."
 echo "При первой записи скилл спросит, где её держать: в корне проекта,"

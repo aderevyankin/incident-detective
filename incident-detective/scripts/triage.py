@@ -28,7 +28,7 @@ import sys
 
 # Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
 if sys.version_info < (3, 8):
-    sys.stderr.write('incident-triage: нужен Python 3.8 или новее, запущен %s (%s)\n'
+    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
                      % (sys.version.split()[0], sys.executable))
     sys.exit(2)
 
@@ -309,7 +309,7 @@ def main(argv=None):
     args.until = pl.parse_time_arg(args.until) if args.until else None
 
     out_dir = args.out or os.path.join(
-        os.environ.get('TMPDIR') or '/tmp', 'incident-triage')
+        os.environ.get('TMPDIR') or '/tmp', 'incident-detective')
     try:
         os.makedirs(out_dir, exist_ok=True)
     except OSError as exc:

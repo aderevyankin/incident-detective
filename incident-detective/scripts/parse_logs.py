@@ -20,17 +20,17 @@ import re
 import sys
 import zipfile
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
 if sys.version_info < (3, 8):
-    sys.stderr.write('incident-triage: нужен Python 3.8 или новее, запущен %s (%s)\n'
+    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
                      % (sys.version.split()[0], sys.executable))
     sys.exit(2)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kb_common import MAX_SUMMARY_CHARS, now, run_script  # noqa: E402
+from kb_common import MAX_SUMMARY_CHARS, TIME_SCALE, now, run_script  # noqa: E402
 
 MAX_LINE = 8192
 LOG_EXTS = ('.log', '.txt', '.json', '.jsonl', '.ndjson', '.out', '.err')
@@ -63,6 +63,25 @@ MONTHS = {m: i + 1 for i, m in enumerate(
 # --------------------------------------------------------------------------
 
 
+# Внутренняя шкала одна — TIME_SCALE из kb_common. Время с явно указанным
+# смещением приводится к ней при разборе; время без указания зоны остаётся как
+# записано и помечается признаком «зона неизвестна». Подставлять зону неоткуда: и
+# зона машины разбора, и зона соседних записей — домысел, который сдвинет события
+# молча.
+
+# Годы, подставленные записям syslog (в самой записи года нет). Собираются при
+# разборе и называются в сводке как допущение: подставленный год виден в выводе,
+# а не остаётся решением, о котором читатель не знает. Множество, а не счётчик:
+# поиск таймстемпа по одной строке делается несколько раз, и счётчик врал бы.
+YEAR_ASSUMED = set()
+
+# Суффикс зоны: `Z`, `+03:00`, `+0300`, `-05`. Пробел перед суффиксом допускается
+# только для форм, которые ни с чем не спутать (access-лог пишет `... +0300]`).
+# Голое `±HH` принимается лишь вплотную к времени: отделённое пробелом `-15` в
+# тексте сообщения — обычное число, а не смещение зоны.
+TZ_RE = r'(\s?Z|\s?[+-]\d{2}:\d{2}|\s?[+-]\d{4}|[+-]\d{2}(?![\d:]))?'
+
+
 def _frac(s):
     if not s:
         return 0
@@ -70,57 +89,120 @@ def _frac(s):
     return int(s)
 
 
+def _tzinfo(raw):
+    """Смещение из суффикса таймстемпа. None — зона в записи не указана."""
+    if not raw:
+        return None
+    text = raw.strip()
+    if text in ('Z', 'z'):
+        return timezone.utc
+    sign = -1 if text[0] == '-' else 1
+    body = text[1:].replace(':', '')
+    if not body.isdigit():
+        return None
+    hours = int(body[:2])
+    minutes = int(body[2:4]) if len(body) >= 4 else 0
+    if hours > 23 or minutes > 59:
+        return None
+    return timezone(sign * timedelta(hours=hours, minutes=minutes))
+
+
 def _ts_iso(m):
     g = m.groups()
     return datetime(int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4]),
-                    int(g[5]), _frac(g[6]))
+                    int(g[5]), _frac(g[6]), _tzinfo(g[7]))
 
 
 def _ts_clf(m):
-    # 28/Jul/2026:12:33:44
+    # 28/Jul/2026:12:33:44 +0300
     g = m.groups()
     mon = MONTHS.get(g[1][:3].lower())
     if not mon:
         return None
-    return datetime(int(g[2]), mon, int(g[0]), int(g[3]), int(g[4]), int(g[5]))
+    return datetime(int(g[2]), mon, int(g[0]), int(g[3]), int(g[4]), int(g[5]),
+                    tzinfo=_tzinfo(g[6]))
 
 
 def _ts_dmy(m):
     g = m.groups()
-    return datetime(int(g[2]), int(g[1]), int(g[0]), int(g[3]), int(g[4]), int(g[5]))
+    return datetime(int(g[2]), int(g[1]), int(g[0]), int(g[3]), int(g[4]), int(g[5]),
+                    tzinfo=_tzinfo(g[6]))
+
+
+def _syslog_year(month, day):
+    """Год для записи без года: такой, чтобы событие не оказалось в будущем.
+
+    Месяц и день позже сегодняшних означают, что запись — из прошлого года:
+    декабрьский инцидент, разбираемый в январе, иначе уезжает на одиннадцать
+    месяцев вперёд, и хронология рассыпается ровно там, где её труднее всего
+    перепроверить. Правило ошибается только на логах давностью больше года — там
+    и подстановка текущего года бесполезна.
+    """
+    ref = now()
+    year = ref.year
+    if (month, day) > (ref.month, ref.day):
+        year -= 1
+    return year
 
 
 def _ts_syslog(m):
-    # Jul 28 12:33:44 — года нет, подставляем текущий (см. kb_common.now)
+    # Jul 28 12:33:44 — года в записи нет, зоны тоже
     g = m.groups()
     mon = MONTHS.get(g[0][:3].lower())
     if not mon:
         return None
-    return datetime(now().year, mon, int(g[1]), int(g[2]), int(g[3]), int(g[4]))
+    day = int(g[1])
+    year = _syslog_year(mon, day)
+    try:
+        dt = datetime(year, mon, day, int(g[2]), int(g[3]), int(g[4]))
+    except ValueError:
+        # 29 февраля в невисокосном году: остаёмся в году «сейчас»
+        year = now().year
+        dt = datetime(year, mon, day, int(g[2]), int(g[3]), int(g[4]))
+    YEAR_ASSUMED.add(year)
+    return dt
 
 
 def _ts_epoch(m):
+    # секунды эпохи отсчитываются от UTC по определению — зона тут известна
     val = float(m.group(1))
     if val > 1e12:          # миллисекунды
         val /= 1000.0
     try:
-        return datetime.fromtimestamp(val)
+        return datetime.fromtimestamp(val, timezone.utc)
     except (ValueError, OSError, OverflowError):
         return None
 
 
 TS_SPECS = [
-    (re.compile(r'(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:[.,](\d{1,9}))?'), _ts_iso),
-    (re.compile(r'(\d{4})/(\d{2})/(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:[.,](\d{1,9}))?'), _ts_iso),
-    (re.compile(r'(\d{1,2})/([A-Za-z]{3})/(\d{4}):(\d{2}):(\d{2}):(\d{2})'), _ts_clf),
-    (re.compile(r'(\d{1,2})\.(\d{2})\.(\d{4})[T ](\d{2}):(\d{2}):(\d{2})'), _ts_dmy),
+    (re.compile(r'(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:[.,](\d{1,9}))?'
+                + TZ_RE), _ts_iso),
+    (re.compile(r'(\d{4})/(\d{2})/(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:[.,](\d{1,9}))?'
+                + TZ_RE), _ts_iso),
+    (re.compile(r'(\d{1,2})/([A-Za-z]{3})/(\d{4}):(\d{2}):(\d{2}):(\d{2})' + TZ_RE), _ts_clf),
+    (re.compile(r'(\d{1,2})\.(\d{2})\.(\d{4})[T ](\d{2}):(\d{2}):(\d{2})' + TZ_RE), _ts_dmy),
     (re.compile(r'([A-Za-z]{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})'), _ts_syslog),
     (re.compile(r'^\W{0,2}(\d{10}(?:\.\d{1,6})?)\b'), _ts_epoch),
 ]
 
 
+def to_scale(dt):
+    """(время на шкале UTC, известна ли зона).
+
+    Время с известным смещением приводится к UTC и дальше живёт наивным: смешение
+    aware и naive в одном сравнении бросает TypeError в самом неожиданном месте —
+    например при вычитании пауз между хопами. Признак зоны едет отдельным полем и
+    доходит до вывода, поэтому допущение сделано в одном месте и названо.
+    """
+    if dt is None:
+        return None, False
+    if dt.tzinfo is None:
+        return dt, False
+    return dt.astimezone(timezone.utc).replace(tzinfo=None), True
+
+
 def find_timestamp_full(text, limit=64):
-    """Возвращает (datetime|None, end_pos, start_pos) для первого таймстемпа."""
+    """(datetime|None, end_pos, start_pos, зона известна) для первого таймстемпа."""
     head = text[:limit]
     best = None
     for rx, fn in TS_SPECS:
@@ -134,20 +216,27 @@ def find_timestamp_full(text, limit=64):
         except (ValueError, TypeError):
             dt = None
         if dt is not None:
-            best = (dt, m.end(), m.start())
+            dt, tz_known = to_scale(dt)
+            best = (dt, m.end(), m.start(), tz_known)
             # раньше нулевой позиции совпадения быть не может, а таймстемп в
             # начале строки — обычный случай: остальные шаблоны проверять незачем
             if m.start() == 0:
                 break
     if best:
         return best
-    return None, 0, 0
+    return None, 0, 0, False
 
 
 def find_timestamp(text, limit=64):
     """Возвращает (datetime|None, end_pos) для первого таймстемпа в начале строки."""
-    dt, end, _ = find_timestamp_full(text, limit)
+    dt, end, _start, _tz = find_timestamp_full(text, limit)
     return dt, end
+
+
+def find_timestamp_tz(text, limit=64):
+    """То же, но с признаком того, была ли зона указана в самой записи."""
+    dt, end, _start, tz_known = find_timestamp_full(text, limit)
+    return dt, end, tz_known
 
 
 # «1h», «30m», «2d» — окно, отсчитанное назад от текущего момента
@@ -321,7 +410,7 @@ def _stringify(val):
 
 
 class Record(object):
-    __slots__ = ('ts', 'level', 'message', 'source', 'origin', 'line_no',
+    __slots__ = ('ts', 'tz_known', 'level', 'message', 'source', 'origin', 'line_no',
                  'fmt', 'trace', 'status', 'raw', 'ts_hint', '_text')
 
     def __init__(self, origin, line_no, raw, ts_hint=None):
@@ -329,10 +418,11 @@ class Record(object):
         self.line_no = line_no
         self.raw = [raw]
         self._text = raw
-        # (datetime, end_pos) от проверки «начало ли это записи»: тот же поиск
-        # таймстемпа, что нужен разбору, — второй раз его делать незачем
+        # (datetime, end_pos, зона известна) от проверки «начало ли это записи»:
+        # тот же поиск таймстемпа, что нужен разбору, — второй раз его делать незачем
         self.ts_hint = ts_hint
         self.ts = None
+        self.tz_known = False
         self.level = None
         self.message = raw
         self.source = None
@@ -365,11 +455,12 @@ def parse_json_line(rec, text):
             if val > 1e12:
                 val /= 1000.0
             try:
-                rec.ts = datetime.fromtimestamp(val)
+                rec.ts, rec.tz_known = to_scale(datetime.fromtimestamp(val, timezone.utc))
             except (ValueError, OSError, OverflowError):
                 rec.ts = None
         else:
-            rec.ts, _ = find_timestamp(str(raw_ts), limit=len(str(raw_ts)) + 1)
+            text = str(raw_ts)
+            rec.ts, _, rec.tz_known = find_timestamp_tz(text, limit=len(text) + 1)
     rec.level = norm_level(_flat_get(obj, JSON_LEVEL_KEYS))
     msg = _flat_get(obj, JSON_MSG_KEYS)
     src = _flat_get(obj, JSON_SRC_KEYS)
@@ -401,7 +492,7 @@ def parse_nginx_line(rec, text):
     if not m:
         return False
     rec.fmt = 'access'
-    rec.ts, _ = find_timestamp(m.group(3), limit=len(m.group(3)) + 1)
+    rec.ts, _, rec.tz_known = find_timestamp_tz(m.group(3), limit=len(m.group(3)) + 1)
     rec.status = int(m.group(6))
     rec.level = 'ERROR' if rec.status >= 500 else ('WARN' if rec.status >= 400 else 'INFO')
     rec.source = 'access'
@@ -428,9 +519,10 @@ def parse_logfmt_line(rec, text):
     rec.fmt = 'logfmt'
     raw_ts = _flat_get(obj, JSON_TS_KEYS)
     if raw_ts:
-        rec.ts, _ = find_timestamp(str(raw_ts), limit=len(str(raw_ts)) + 1)
+        val = str(raw_ts)
+        rec.ts, _, rec.tz_known = find_timestamp_tz(val, limit=len(val) + 1)
     if rec.ts is None:
-        rec.ts, _ = find_timestamp(text)
+        rec.ts, _, rec.tz_known = find_timestamp_tz(text)
     rec.level = norm_level(_flat_get(obj, JSON_LEVEL_KEYS))
     src = _flat_get(obj, JSON_SRC_KEYS)
     rec.source = str(src)[:60] if src else None
@@ -448,10 +540,11 @@ BRACKET_SRC_RE = re.compile(r'\[([\w.\-]{2,60})\]')
 
 def parse_plain_line(rec, text):
     if rec.ts_hint is not None and rec.raw[0] == text:
-        ts, end = rec.ts_hint
+        ts, end, tz_known = rec.ts_hint
     else:
-        ts, end = find_timestamp(text)
+        ts, end, tz_known = find_timestamp_tz(text)
     rec.ts = ts
+    rec.tz_known = tz_known
     rest = text[end:] if ts else text
     m = LEVEL_RE.search(rest[:120])
     if m:
@@ -481,8 +574,8 @@ def classify_line(text):
         return True, None
     if stripped[0] in ' \t':
         return False, None
-    dt, end, _ = find_timestamp_full(text, limit=64)
-    hint = (dt, end)
+    dt, end, _start, tz_known = find_timestamp_full(text, limit=64)
+    hint = (dt, end, tz_known)
     # прежняя проверка искала в первых 48 символах: совпадение считается
     # найденным, только если оно целиком помещается в этот отрезок
     if dt is not None and end <= 48:
@@ -683,6 +776,9 @@ class Group(object):
         self.count = 0
         self.first = None
         self.last = None
+        # зона известна у всех записей группы — иначе время её первого появления
+        # сопоставимо с другими источниками только при допущении о зоне
+        self.tz_known = True
         self.sample = None
         self.origins = Counter()
         self.sources = Counter()
@@ -692,6 +788,8 @@ class Group(object):
     def add(self, rec):
         self.count += 1
         if rec.ts:
+            if not rec.tz_known:
+                self.tz_known = False
             if self.first is None or rec.ts < self.first:
                 self.first = rec.ts
             if self.last is None or rec.ts > self.last:
@@ -713,6 +811,9 @@ def analyze(records, args):
         'records': 0, 'filtered': 0, 'levels': Counter(), 'formats': Counter(),
         'origins': Counter(), 'statuses': Counter(), 'exceptions': Counter(),
         'services': Counter(),
+        # считаются по всем записям с распознанным временем, а не по прошедшим
+        # фильтры: смешение зон — свойство ленты, а не выборки из неё
+        'tz_known': 0, 'tz_unknown': 0,
     }
     hist = Counter()
     err_hist = Counter()
@@ -731,6 +832,7 @@ def analyze(records, args):
         if rec.status:
             stats['statuses'][rec.status] += 1
         if rec.ts:
+            stats['tz_known' if rec.tz_known else 'tz_unknown'] += 1
             if first_ts is None or rec.ts < first_ts:
                 first_ts = rec.ts
             if last_ts is None or rec.ts > last_ts:
@@ -772,6 +874,32 @@ def analyze(records, args):
         'trace_errors': trace_errors, 'first_ts': first_ts, 'last_ts': last_ts,
         'prefiltered': 0,
     }
+
+
+def time_notes(stats):
+    """Допущения, сделанные при разборе времени. Пустой список — их не было.
+
+    Названы вместе с последствием: пометка «зона неизвестна» сама по себе читается
+    как поломка, а нужно, чтобы читатель понял, чему именно нельзя верить.
+    """
+    notes = []
+    known = stats.get('tz_known', 0)
+    unknown = stats.get('tz_unknown', 0)
+    total = known + unknown
+    if unknown and total:
+        notes.append('Зона не указана у %d из %d записей с временем (%d%%) — '
+                     'они показаны как записаны, зона не домысливается ни из '
+                     'окружения, ни из соседних записей.'
+                     % (unknown, total, round(100.0 * unknown / total)))
+    if known and unknown:
+        notes.append('В ленте есть и записи с указанной зоной, и записи без неё: '
+                     'порядок событий между этими группами может быть неверен, а с '
+                     'ним и вывод о том, что случилось раньше.')
+    if YEAR_ASSUMED:
+        notes.append('Года в записях syslog нет — подставлен %s, выбран так, чтобы '
+                     'событие не оказалось в будущем.'
+                     % ', '.join(str(y) for y in sorted(YEAR_ASSUMED)))
+    return notes
 
 
 def short_template(template, limit=100):
@@ -854,6 +982,9 @@ def _render_md(result, args, out, room, head_only=False):
         span = result['last_ts'] - result['first_ts']
         w('- Период: %s — %s (%s)\n' % (fmt_ts(result['first_ts']),
                                         fmt_ts(result['last_ts']), fmt_span(span)))
+        # шкала называется всегда, когда в сводке есть времена: без неё их не с чем
+        # сверить — ни с Kibana, ни с алертом
+        w('- Шкала времени: %s\n' % TIME_SCALE)
     else:
         w('- Период: таймстемпы не распознаны\n')
     levels = ' '.join('%s=%d' % (lv, stats['levels'][lv])
@@ -863,6 +994,11 @@ def _render_md(result, args, out, room, head_only=False):
     if stats['services']:
         w('- Компоненты: %s\n' % ', '.join(
             '%s (%d)' % (s, c) for s, c in stats['services'].most_common(6)))
+    notes = time_notes(stats)
+    if notes:
+        w('\n**Допущения о времени**\n\n')
+        for note in notes:
+            w('- %s\n' % note)
     w('\n')
 
     if head_only:
@@ -1027,6 +1163,14 @@ def render_json(result, args, out):
             'exceptions': dict(stats['exceptions'].most_common(20)),
             'first_ts': fmt_ts(result['first_ts']) if result['first_ts'] else None,
             'last_ts': fmt_ts(result['last_ts']) if result['last_ts'] else None,
+            # смысл существующих полей времени не меняется: это та же шкала, теперь
+            # названная. Разбор, сделанный прежней версией, этих полей не имеет —
+            # читающий его считает зону неизвестной, как оно и было
+            'time_scale': TIME_SCALE,
+            'tz_known': stats['tz_known'],
+            'tz_unknown': stats['tz_unknown'],
+            'mixed_timezones': bool(stats['tz_known'] and stats['tz_unknown']),
+            'time_assumptions': time_notes(stats),
         },
         'groups': [{
             'n': i,
@@ -1035,6 +1179,7 @@ def render_json(result, args, out):
             'template': g.template,
             'first': fmt_ts(g.first) if g.first else None,
             'last': fmt_ts(g.last) if g.last else None,
+            'tz_known': g.tz_known,
             'sample': (g.sample or '')[:600],
             'origins': dict(g.origins),
             'sources': dict(g.sources),
@@ -1055,7 +1200,8 @@ def render_context(result, args, out):
         out.write('Нет группы #%d (всего %d)\n' % (idx, len(groups)))
         return
     grp = groups[idx - 1]
-    out.write('# Группа #%d — %d× %s\n`%s`\n\n' % (idx, grp.count, grp.level, grp.template))
+    out.write('# Группа #%d — %d× %s\n`%s`\n\nВремена в %s.\n\n'
+              % (idx, grp.count, grp.level, grp.template, TIME_SCALE))
     for rec in grp.records:
         out.write('--- %s:%d  %s\n%s\n\n' % (rec.origin, rec.line_no,
                                              fmt_ts(rec.ts), rec.raw_text[:4000]))
@@ -1067,8 +1213,9 @@ def render_trace(records, trace_id, out):
     if not hits:
         out.write('Записей с id %r не найдено\n' % trace_id)
         return
-    hits.sort(key=lambda r: (r.ts or datetime.min, r.line_no))
-    out.write('# Цепочка %s — %d записей\n\n' % (trace_id, len(hits)))
+    hits.sort(key=lambda r: (r.ts or datetime.min, r.origin, r.line_no))
+    out.write('# Цепочка %s — %d записей\n\nВремена в %s.\n\n'
+              % (trace_id, len(hits), TIME_SCALE))
     for rec in hits:
         out.write('%s  %-5s  %s\n%s\n\n' % (fmt_ts(rec.ts), rec.level,
                                             rec.source or rec.origin,

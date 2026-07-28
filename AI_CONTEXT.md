@@ -4,7 +4,7 @@
 
 ## Что это за проект
 
-`incident-triage` — скилл разбора багов и инцидентов в формате [Agent Skills](https://qwenlm.github.io/qwen-code-docs/en/users/features/skills/):
+`incident-detective` — скилл разбора багов и инцидентов в формате [Agent Skills](https://qwenlm.github.io/qwen-code-docs/en/users/features/skills/):
 директория со `SKILL.md`, YAML-фронтматтером и вспомогательными файлами. Основная цель —
 Qwen Code CLI, но формат переносим.
 
@@ -27,7 +27,7 @@ Qwen Code CLI, но формат переносим.
 ## Раскладка
 
 ```
-incident-triage/           сам скилл — то, что копируется пользователю
+incident-detective/           сам скилл — то, что копируется пользователю
   SKILL.md                 инструкции агенту: когда включаться, порядок шагов, границы
   scripts/*.py             исполняемая часть, запускается как процессы
   references/*.md          подробности, на которые SKILL.md ссылается по ходу

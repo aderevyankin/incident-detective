@@ -43,14 +43,14 @@ class Packaging(ScriptCase):
         """Устанавливается директория скилла — проверки в неё не входят."""
         self.assertFalse(
             os.path.abspath(helpers.HERE).startswith(
-                os.path.join(helpers.REPO, 'incident-triage') + os.sep),
+                os.path.join(helpers.REPO, 'incident-detective') + os.sep),
             'набор проверок лежит внутри устанавливаемого скилла')
 
     def test_installer_copies_only_the_skill(self):
         with open(os.path.join(helpers.REPO, 'install.sh'), 'r', encoding='utf-8') as fh:
             installer = fh.read()
         self.assertIn('cp -R "$SRC" "$DEST"', installer)
-        self.assertIn('SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/incident-triage"',
+        self.assertIn('SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/incident-detective"',
                       installer)
         self.assertNotIn('tests', installer,
                          'установщик упоминает tests — проверки могут поехать в скилл')

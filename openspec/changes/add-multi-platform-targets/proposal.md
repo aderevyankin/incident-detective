@@ -62,9 +62,9 @@
 - `install.sh` — сокращается до проверки `python3` и передачи управления.
 - `install.py` — новый файл: разбор аргументов, обнаружение платформ, селектор, копирование,
   сохранение записей базы знаний.
-- `incident-triage/SKILL.md` — шаги 0, 1, 9, пояснение `$SKILL_DIR`, шаг 3.1 (поиск источников
+- `incident-detective/SKILL.md` — шаги 0, 1, 9, пояснение `$SKILL_DIR`, шаг 3.1 (поиск источников
   логов).
-- `incident-triage/references/` — новый справочник платформ; правка `log-sources.md`.
+- `incident-detective/references/` — новый справочник платформ; правка `log-sources.md`.
 - `README.md` — установка и раздел о поддерживаемых платформах.
 - `openspec/config.yaml` — раздел контекста о целевой платформе.
 - `openspec/changes/add-claude-code-target/` — удаляется, содержание поглощается этим изменением.

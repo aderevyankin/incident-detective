@@ -30,7 +30,7 @@ import tempfile
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS_DIR = os.path.join(REPO, 'incident-triage', 'scripts')
+SCRIPTS_DIR = os.path.join(REPO, 'incident-detective', 'scripts')
 
 DEFAULT_LINES = 400000
 KB_RECORDS = 1000

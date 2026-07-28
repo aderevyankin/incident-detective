@@ -70,18 +70,18 @@
 
 ## Impact
 
-- `incident-triage/scripts/parse_logs.py`: захват смещения в регулярках таймстемпов, приведение
+- `incident-detective/scripts/parse_logs.py`: захват смещения в регулярках таймстемпов, приведение
   к единой шкале, пометка записей без зоны, выбор года для syslog, поля шкалы и допущений в
   сводке и в JSON-выводе.
-- `incident-triage/scripts/timeline.py`: нормализация времени до сортировки, устойчивый ключ
+- `incident-detective/scripts/timeline.py`: нормализация времени до сортировки, устойчивый ключ
   сортировки, оценка расхождения часов, флаг явной поправки.
-- `incident-triage/scripts/trace.py`: переход на общую логику расхождения часов, указание шкалы
+- `incident-detective/scripts/trace.py`: переход на общую логику расхождения часов, указание шкалы
   в выводе.
-- `incident-triage/scripts/kb_common.py` (или соседний общий модуль): общие функции работы со
+- `incident-detective/scripts/kb_common.py` (или соседний общий модуль): общие функции работы со
   временем, чтобы у хронологии и цепочки не было двух реализаций.
-- `incident-triage/references/parsing.md`, `references/correlation.md`: описание работы с зонами,
+- `incident-detective/references/parsing.md`, `references/correlation.md`: описание работы с зонами,
   допущений и порядка действий при разъехавшихся часах.
-- `incident-triage/SKILL.md`: шаги 3.3 и 3.4 — упоминание шкалы времени и общего порядка работы
+- `incident-detective/SKILL.md`: шаги 3.3 и 3.4 — упоминание шкалы времени и общего порядка работы
   с расхождением часов.
 - Формат JSON-вывода `parse_logs.py` дополняется полями времени; потребители внутри скилла
   (`timeline.py`, `trace.py`, `kb_search.py`, `code_hints.py`, `confidence.py`) должны читать

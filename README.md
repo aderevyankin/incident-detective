@@ -1,4 +1,4 @@
-# incident-triage — скилл разбора инцидентов для Qwen Code CLI
+# incident-detective — скилл разбора инцидентов для Qwen Code CLI
 
 Скилл в формате [Agent Skills](https://qwenlm.github.io/qwen-code-docs/en/users/features/skills/):
 папка со `SKILL.md`, YAML-фронтматтером и вспомогательными файлами. Формат общий для
@@ -62,15 +62,15 @@ HTTP-статус, шаблон сообщения). Логи её порожд�
 ## Установка
 
 ```bash
-./install.sh              # личный скилл: ~/.qwen/skills/incident-triage
-./install.sh --project    # проектный: ./.qwen/skills/incident-triage (едет в git)
+./install.sh              # личный скилл: ~/.qwen/skills/incident-detective
+./install.sh --project    # проектный: ./.qwen/skills/incident-detective (едет в git)
 ```
 
 Затем перезапусти Qwen Code — скиллы читаются при старте. Проверить: `/skills`.
 
 Установщик необязателен: он копирует директорию, сохраняет записи базы знаний и
 пересобирает индекс, но скилл работает и при обычном копировании
-`incident-triage/` в `~/.qwen/skills/` — в закрытых контурах так чаще всего и бывает.
+`incident-detective/` в `~/.qwen/skills/` — в закрытых контурах так чаще всего и бывает.
 
 ## Требования к окружению
 
@@ -101,7 +101,7 @@ python3 tools/check_compat.py
 
 Скилл **самозапускающийся**: включается сам, когда в сообщении есть признак инцидента —
 «упало на stage», «504 на проде», «почему падает», вставленный стектрейс, ссылка на
-Kibana. Явная команда `/incident-triage` тоже работает, но не нужна.
+Kibana. Явная команда `/incident-detective` тоже работает, но не нужна.
 
 Первым делом скилл заводит план через `todo_write` и дальше строго ему следует, чтобы
 не утонуть в логах, забыв спросить базу знаний.
@@ -122,7 +122,7 @@ Python / Go / JS, произвольный текст), многострочны
 ## Структура
 
 ```
-incident-triage/
+incident-detective/
 ├── SKILL.md                    точка входа: триггеры, план работы, шаги
 ├── references/
 │   ├── onboarding.md           что спрашивать вариантами, а что свободным вводом
@@ -167,7 +167,7 @@ tests/                          не входит в устанавливаем�
 Всё работает и руками, без Qwen:
 
 ```bash
-S=~/.qwen/skills/incident-triage/scripts
+S=~/.qwen/skills/incident-detective/scripts
 
 python3 $S/triage.py app.log --repo . --stand stage    # вся цепочка одной командой
 

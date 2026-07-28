@@ -64,18 +64,18 @@
 
 ## Impact
 
-- `incident-triage/templates/incident.md`: поля исхода, счётчика переиспользования и раздел
+- `incident-detective/templates/incident.md`: поля исхода, счётчика переиспользования и раздел
   отличительных признаков.
-- `incident-triage/scripts/kb_add.py`: запись и обновление исхода, инкремент счётчика при
+- `incident-detective/scripts/kb_add.py`: запись и обновление исхода, инкремент счётчика при
   `--update`, ввод отличительных признаков.
-- `incident-triage/scripts/kb_index.py`: новые поля в индексе.
-- `incident-triage/scripts/kb_search.py`: отображение исхода, возраста, счётчика и отличительных
+- `incident-detective/scripts/kb_index.py`: новые поля в индексе.
+- `incident-detective/scripts/kb_search.py`: отображение исхода, возраста, счётчика и отличительных
   признаков; понижение опровергнутых записей в выдаче.
-- `incident-triage/scripts/confidence.py`: учёт исхода при расчёте вклада контура базы знаний.
-- `incident-triage/SKILL.md`: шаги 2, 4 и 8 — проверка отличительных признаков, уточнение исхода,
+- `incident-detective/scripts/confidence.py`: учёт исхода при расчёте вклада контура базы знаний.
+- `incident-detective/SKILL.md`: шаги 2, 4 и 8 — проверка отличительных признаков, уточнение исхода,
   запись признаков при пополнении базы.
-- `incident-triage/references/kb-format.md`: описание новых полей и правил их заполнения.
-- `incident-triage/kb/index.json`: пересборка индекса; записи без новых полей читаются как
+- `incident-detective/references/kb-format.md`: описание новых полей и правил их заполнения.
+- `incident-detective/kb/index.json`: пересборка индекса; записи без новых полей читаются как
   непроверенные.
 - Существующие записи остаются валидными: новые поля необязательны, отсутствие трактуется как
   «исход неизвестен».
