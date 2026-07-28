@@ -7,6 +7,7 @@
 """
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -20,8 +21,8 @@ if sys.version_info < (3, 8):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kb_common import (  # noqa: E402
-    kb_dir, load_incidents, signature_similarity, signatures_from_parsed,
-    load_parsed, tokenize,
+    MAX_SUMMARY_CHARS, kb_dir, load_incidents_fast, signature_similarity,
+    signatures_from_parsed, load_parsed, tokenize,
 )
 
 FIELD_WEIGHTS = [
@@ -106,37 +107,57 @@ def score_incident(inc, query_tokens, signatures, filters):
     return {'score': round(score, 2), 'reasons': reasons, 'inc': inc}
 
 
-def render_md(hits, out, query_desc, total):
+def render_md(hits, out, query_desc, total, budget=MAX_SUMMARY_CHARS):
     if not hits:
         out.write('# База знаний: совпадений нет\n\n'
                   'Запрос: %s\nВсего записей в базе: %d\n\n'
                   'Инцидент, похоже, новый — после разбора имеет смысл его записать '
                   '(`kb_add.py`).\n' % (query_desc, total))
         return
-    out.write('# База знаний: найдено %d из %d\n\nЗапрос: %s\n\n' % (len(hits), total, query_desc))
-    for hit in hits:
-        meta = hit['inc']['meta']
-        out.write('## %s — %s\n' % (meta.get('id'), meta.get('title')))
-        bits = []
-        for key, label in (('date', ''), ('status', 'status'), ('severity', 'severity')):
-            if meta.get(key):
-                bits.append('%s%s' % (label + ' ' if label else '', meta[key]))
-        for key in ('stands', 'services', 'tags'):
-            if meta.get(key):
-                bits.append('%s: %s' % (key, ', '.join(str(v) for v in meta[key])))
-        out.write('- %s\n' % ' · '.join(bits))
-        out.write('- релевантность: %.1f — %s\n' % (hit['score'], '; '.join(hit['reasons'][:4])))
-        for section in ('Симптомы', 'Причина', 'Решение'):
-            text = hit['inc']['sections'].get(section)
-            if text:
-                snippet = ' '.join(text.split())[:280]
-                out.write('- **%s:** %s%s\n' % (section, snippet,
-                                                '…' if len(text) > 280 else ''))
-        if meta.get('files'):
-            out.write('- код: %s\n' % ', '.join(str(f) for f in meta['files'][:5]))
-        out.write('- файл: `%s`\n\n' % hit['inc']['path'])
+    # выдача едет в контекст агента: показываем сколько влезает, а не сколько нашлось
+    shown = hits
+    if budget > 0:
+        shown = []
+        used = 0
+        for hit in hits:
+            buf = io.StringIO()
+            render_hit(hit, buf)
+            used += len(buf.getvalue())
+            if used > budget and shown:
+                break
+            shown.append(hit)
+    out.write('# База знаний: найдено %d из %d\n\nЗапрос: %s\n\n'
+              % (len(hits), total, query_desc))
+    for hit in shown:
+        render_hit(hit, out)
+    if len(shown) < len(hits):
+        out.write('_Показано %d записей из %d — выдача ограничена по объёму. '
+                  'Полный список: `--format json`._\n\n' % (len(shown), len(hits)))
     out.write('Совпадение сигнатуры не доказывает ту же причину — сверь стенд, '
               'сервис и условия перед выводом.\n')
+
+
+def render_hit(hit, out):
+    meta = hit['inc']['meta']
+    out.write('## %s — %s\n' % (meta.get('id'), meta.get('title')))
+    bits = []
+    for key, label in (('date', ''), ('status', 'status'), ('severity', 'severity')):
+        if meta.get(key):
+            bits.append('%s%s' % (label + ' ' if label else '', meta[key]))
+    for key in ('stands', 'services', 'tags'):
+        if meta.get(key):
+            bits.append('%s: %s' % (key, ', '.join(str(v) for v in meta[key])))
+    out.write('- %s\n' % ' · '.join(bits))
+    out.write('- релевантность: %.1f — %s\n' % (hit['score'], '; '.join(hit['reasons'][:4])))
+    for section in ('Симптомы', 'Причина', 'Решение'):
+        text = hit['inc']['sections'].get(section)
+        if text:
+            snippet = ' '.join(text.split())[:280]
+            out.write('- **%s:** %s%s\n' % (section, snippet,
+                                            '…' if len(text) > 280 else ''))
+    if meta.get('files'):
+        out.write('- код: %s\n' % ', '.join(str(f) for f in meta['files'][:5]))
+    out.write('- файл: `%s`\n\n' % hit['inc']['path'])
 
 
 def render_json(hits, out):
@@ -179,8 +200,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     directory = kb_dir(args.kb)
-    incidents = load_incidents(directory)
+    # поиск вызывается на каждом разборе, а база растёт: читаем индекс, а не
+    # тысячу markdown-файлов подряд
+    incidents, warning = load_incidents_fast(directory)
     out = sys.stdout
+    if warning:
+        sys.stderr.write('warning: %s\n' % warning)
 
     if not incidents:
         out.write('База знаний пуста или не найдена: %s\n'
@@ -212,7 +237,10 @@ def main(argv=None):
         result = score_incident(inc, query_tokens, signatures, filters)
         if result and result['score'] >= args.min_score:
             hits.append(result)
-    hits.sort(key=lambda h: -h['score'])
+    # id вторым ключом: при равных баллах порядок не должен зависеть от того,
+    # прочитаны записи из индекса или из markdown — иначе один и тот же запрос
+    # даёт разные ответы
+    hits.sort(key=lambda h: (-h['score'], str(h['inc']['meta'].get('id') or '')))
     hits = hits[:args.top]
 
     desc = ' '.join(query_parts[:8]) or '(по сигнатурам)'

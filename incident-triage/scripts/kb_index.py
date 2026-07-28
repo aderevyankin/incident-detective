@@ -41,6 +41,9 @@ def rebuild(directory=None):
             services[str(svc)] += 1
         symptoms = ' '.join(inc['sections'].get('Симптомы', '').split())
         entries.append({
+            # секции целиком: по ним считается релевантность, и поиск должен
+            # давать тот же ответ по индексу, что и по markdown-файлам
+            'sections': {k: v for k, v in inc['sections'].items() if v},
             'id': meta.get('id'),
             'title': meta.get('title'),
             'date': meta.get('date'),
@@ -55,8 +58,18 @@ def rebuild(directory=None):
             'file': os.path.basename(inc['path']),
         })
     entries.sort(key=lambda e: str(e.get('date') or ''), reverse=True)
+    # время правки самой свежей записи на момент сборки: по нему поиск понимает,
+    # что индекс отстал. Сравнивать с временем сборки нельзя — оно округлено до
+    # секунды, и свежий индекс выглядел бы устаревшим
+    newest = 0.0
+    for inc in incidents:
+        try:
+            newest = max(newest, os.path.getmtime(inc['path']))
+        except OSError:
+            pass
     index = {
         'generated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'source_mtime': newest,
         'count': len(entries),
         'tags': dict(tags.most_common()),
         'stands': dict(stands.most_common()),

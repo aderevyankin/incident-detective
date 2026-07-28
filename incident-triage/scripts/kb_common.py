@@ -13,6 +13,11 @@ DEFAULT_KB = os.path.join(SKILL_DIR, 'kb')
 
 SECTIONS = ['Симптомы', 'Диагностика', 'Причина', 'Решение', 'Проверка', 'Заметки']
 
+# Вывод скриптов едет в контекст агента и остаётся там до конца разбора: чем он
+# больше, тем медленнее каждый следующий шаг. Предел общий для всех скриптов,
+# на машинный вывод (`--format json`) не распространяется — тот пишется в файл.
+MAX_SUMMARY_CHARS = 12000
+
 LIST_FIELDS = ('stands', 'services', 'tags', 'signatures', 'related', 'files', 'commits')
 
 
@@ -150,6 +155,90 @@ def load_incidents(directory=None):
         items.append({'meta': meta, 'body': body, 'path': path,
                       'sections': split_sections(body)})
     return items
+
+
+def index_path(directory=None):
+    return os.path.join(kb_dir(directory), 'index.json')
+
+
+def index_is_stale(directory=None):
+    """(устарел ли индекс, причина).
+
+    Индекс — производная от markdown-файлов, и правят их руками: добавить запись,
+    поправить причину, удалить дубль. Поэтому перед тем как верить индексу, надо
+    убедиться, что он описывает те же файлы и не старше их.
+    """
+    directory = kb_dir(directory)
+    path = os.path.join(directory, 'index.json')
+    if not os.path.exists(path):
+        return True, 'индекса нет'
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            index = json.load(fh)
+    except (OSError, ValueError):
+        return True, 'индекс не читается'
+    listed = {e.get('file') for e in index.get('incidents') or []}
+    on_disk = set()
+    newest = 0.0
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return True, 'база знаний не читается'
+    for name in names:
+        if not name.endswith('.md') or name.upper().startswith('README'):
+            continue
+        on_disk.add(name)
+        try:
+            newest = max(newest, os.path.getmtime(os.path.join(directory, name)))
+        except OSError:
+            pass
+    if listed != on_disk:
+        return True, 'состав записей изменился'
+    source_mtime = index.get('source_mtime')
+    if not isinstance(source_mtime, (int, float)):
+        return True, 'индекс собран старой версией kb_index.py'
+    if newest > source_mtime:
+        return True, 'запись правили после сборки индекса'
+    return False, None
+
+
+def load_from_index(directory=None):
+    """Записи базы знаний из индекса — без чтения markdown-файлов.
+
+    Возвращает None, если индекса нет или он устарел: тогда вызывающий код
+    читает markdown, а пользователю говорится, что индекс стоит пересобрать.
+    """
+    directory = kb_dir(directory)
+    stale, _ = index_is_stale(directory)
+    if stale:
+        return None
+    try:
+        with open(os.path.join(directory, 'index.json'), 'r', encoding='utf-8') as fh:
+            index = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    items = []
+    for entry in index.get('incidents') or []:
+        sections = entry.get('sections')
+        if sections is None:      # индекс собран старой версией kb_index.py
+            return None
+        meta = {k: v for k, v in entry.items() if k not in ('sections', 'file', 'symptoms')}
+        items.append({'meta': meta, 'body': '', 'sections': sections,
+                      'path': os.path.join(directory, entry.get('file') or '')})
+    return items
+
+
+def load_incidents_fast(directory=None):
+    """(записи, предупреждение) — через индекс, если он актуален."""
+    items = load_from_index(directory)
+    if items is not None:
+        return items, None
+    stale, reason = index_is_stale(directory)
+    warning = None
+    if stale and reason != 'индекса нет':
+        warning = 'индекс базы знаний устарел (%s) — поиск идёт по markdown; ' \
+                  'пересобрать: kb_index.py' % reason
+    return load_incidents(directory), warning
 
 
 def next_id(incidents, when=None):

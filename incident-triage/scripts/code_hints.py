@@ -14,6 +14,7 @@
 """
 
 import argparse
+import io
 import json
 import os
 import re
@@ -30,7 +31,7 @@ if sys.version_info < (3, 8):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kb_common import load_parsed  # noqa: E402
+from kb_common import MAX_SUMMARY_CHARS, load_parsed  # noqa: E402
 
 SKIP_DIRS = {'.git', 'node_modules', 'venv', '.venv', 'env', '__pycache__',
              'dist', 'build', 'target', '.idea', '.gradle', 'vendor',
@@ -167,6 +168,43 @@ def git(repo, *args):
     return res.stdout.decode('utf-8', 'replace').rstrip('\n')
 
 
+# Сколько процессов git позволено запустить за разбор кода. Длинный стектрейс
+# ведёт в два десятка фреймов, а blame и история по каждому — это два запуска
+# процесса на фрейм: сам git отрабатывает мгновенно, дорог именно запуск.
+GIT_CALL_BUDGET = 12
+
+
+class GitRunner(object):
+    """Запускает git с кэшем по аргументам и общим бюджетом запусков.
+
+    Кэш нужен, потому что несколько фреймов стектрейса обычно ведут в один файл,
+    а история файла от номера строки не зависит. Бюджет — потому что фреймов
+    бывает больше, чем имеет смысл спрашивать: за пределами бюджета история не
+    запрашивается, и об этом говорится в выводе, а не умалчивается.
+    """
+
+    def __init__(self, repo, budget=GIT_CALL_BUDGET):
+        self.repo = repo
+        self.budget = budget
+        self.cache = {}
+        self.calls = 0
+        self.skipped = 0
+        self.enabled = True
+
+    def run(self, *args):
+        if not self.enabled:
+            return None
+        if args in self.cache:
+            return self.cache[args]
+        if self.calls >= self.budget:
+            self.skipped += 1
+            return None
+        self.calls += 1
+        out = git(self.repo, *args)
+        self.cache[args] = out
+        return out
+
+
 def is_git_repo(repo):
     return git(repo, 'rev-parse', '--is-inside-work-tree') == 'true'
 
@@ -190,9 +228,9 @@ def commits_in_window(repo, start, end, limit=15):
     return rows
 
 
-def file_history(repo, path, limit=3):
-    out = git(repo, 'log', '-n', str(limit), '--date=short',
-              '--pretty=format:%h|%ad|%an|%s', '--', path)
+def file_history(runner, path, limit=3):
+    out = runner.run('log', '-n', str(limit), '--date=short',
+                     '--pretty=format:%h|%ad|%an|%s', '--', path)
     if not out:
         return []
     rows = []
@@ -204,9 +242,9 @@ def file_history(repo, path, limit=3):
     return rows
 
 
-def blame_line(repo, path, lineno):
-    out = git(repo, 'blame', '-L', '%d,%d' % (lineno, lineno), '--date=short',
-              '-p', '--', path)
+def blame_line(runner, path, lineno):
+    out = runner.run('blame', '-L', '%d,%d' % (lineno, lineno), '--date=short',
+                     '-p', '--', path)
     if not out:
         return None
     info = {}
@@ -295,7 +333,7 @@ def extract_frames(texts, limit=25):
     return list(frames.values())
 
 
-def resolve_frames(frames, index, repo):
+def resolve_frames(frames, index, runner):
     """Сопоставляет фреймы стектрейсов с файлами репозитория."""
     resolved = []
     for frame in frames:
@@ -317,8 +355,8 @@ def resolve_frames(frames, index, repo):
         item['matches'] = candidates[:3]
         if candidates:
             item['context'] = context_lines(candidates[0], frame['line'])
-            item['blame'] = blame_line(repo, candidates[0], frame['line'])
-            item['history'] = file_history(repo, candidates[0])
+            item['blame'] = blame_line(runner, candidates[0], frame['line'])
+            item['history'] = file_history(runner, candidates[0])
         resolved.append(item)
     return resolved
 
@@ -336,6 +374,59 @@ def context_lines(path, lineno, radius=3):
 # ---- вывод ---------------------------------------------------------------
 
 
+def render_frame(frame, w):
+    head = '`%s:%d`' % (frame['basename'], frame['line'])
+    if frame.get('symbol'):
+        head += ' — `%s`' % frame['symbol']
+    w('**%s**\n' % head)
+    if not frame['matches']:
+        w('  файл в проекте не найден — вероятно, код внешней библиотеки '
+          'или другого сервиса\n\n')
+        return
+    w('  → `%s`\n' % frame['matches'][0])
+    if len(frame['matches']) > 1:
+        w('  другие кандидаты: %s\n' % ', '.join('`%s`' % p for p in frame['matches'][1:]))
+    if not frame.get('context'):
+        total = len(read_lines(frame['matches'][0]))
+        if total and frame['line'] > total:
+            w('  ⚠ строки %d в файле нет (всего %d) — код в репозитории не той версии, '
+              'что на стенде. Сверь ветку/тег с задеплоенной сборкой.\n\n'
+              % (frame['line'], total))
+            return
+    for line in frame.get('context') or []:
+        mark = '>' if line['target'] else ' '
+        w('    %s %4d | %s\n' % (mark, line['n'], line['text']))
+    blame = frame.get('blame')
+    if blame:
+        w('  blame: %s · %s · %s · %s\n' % (
+            blame.get('hash', '?'), blame.get('date', '?'),
+            blame.get('author', '?'), blame.get('subject', '')[:70]))
+    w('\n')
+
+
+def limit_frames(frames, data, budget=MAX_SUMMARY_CHARS):
+    """Сколько фреймов поместится в бюджет вывода.
+
+    Фреймы идут по убыванию значимости: верхние ведут в код проекта, нижние —
+    в библиотеки. Обрезаем хвост, а не показываем всё подряд: вывод едет в
+    контекст агента.
+    """
+    if budget <= 0:
+        data['frames_hidden'] = 0
+        return frames
+    used = 0
+    shown = []
+    for frame in frames:
+        buf = io.StringIO()
+        render_frame(frame, buf.write)
+        used += len(buf.getvalue())
+        if used > budget * 2 // 3 and shown:
+            break
+        shown.append(frame)
+    data['frames_hidden'] = len(frames) - len(shown)
+    return shown
+
+
 def render_md(data, out):
     w = out.write
     w('# Связь ошибок с кодом\n\n')
@@ -347,34 +438,16 @@ def render_md(data, out):
     frames = data['frames']
     if frames:
         w('## Фреймы стектрейсов\n\n')
-        for frame in frames:
-            head = '`%s:%d`' % (frame['basename'], frame['line'])
-            if frame.get('symbol'):
-                head += ' — `%s`' % frame['symbol']
-            w('**%s**\n' % head)
-            if not frame['matches']:
-                w('  файл в проекте не найден — вероятно, код внешней библиотеки '
-                  'или другого сервиса\n\n')
-                continue
-            w('  → `%s`\n' % frame['matches'][0])
-            if len(frame['matches']) > 1:
-                w('  другие кандидаты: %s\n' % ', '.join('`%s`' % p for p in frame['matches'][1:]))
-            if not frame.get('context'):
-                total = len(read_lines(frame['matches'][0]))
-                if total and frame['line'] > total:
-                    w('  ⚠ строки %d в файле нет (всего %d) — код в репозитории не той версии, '
-                      'что на стенде. Сверь ветку/тег с задеплоенной сборкой.\n\n'
-                      % (frame['line'], total))
-                    continue
-            for line in frame.get('context') or []:
-                mark = '>' if line['target'] else ' '
-                w('    %s %4d | %s\n' % (mark, line['n'], line['text']))
-            blame = frame.get('blame')
-            if blame:
-                w('  blame: %s · %s · %s · %s\n' % (
-                    blame.get('hash', '?'), blame.get('date', '?'),
-                    blame.get('author', '?'), blame.get('subject', '')[:70]))
-            w('\n')
+        for frame in limit_frames(frames, data):
+            render_frame(frame, w)
+        hidden = data.get('frames_hidden', 0)
+        if hidden:
+            w('_Не показано фреймов: %d — вывод ограничен по объёму. '
+              'Полный список: `--format json`._\n\n' % hidden)
+        if data.get('git_skipped'):
+            w('_История не запрашивалась для %d фреймов: превышен бюджет обращений '
+              'к git. Посмотреть точечно: `git blame -L N,N -- файл`._\n\n'
+              % data['git_skipped'])
     else:
         w('## Фреймы стектрейсов\n\nВ логах нет ссылок на файлы кода — '
           'ищем по тексту сообщений.\n\n')
@@ -426,18 +499,9 @@ def render_md(data, out):
       'чтобы в следующий раз выйти на это место сразу.\n')
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(
-        description='Связывает ошибки из логов с кодом проекта и git-историей.')
-    ap.add_argument('--from-parsed', help='JSON-вывод parse_logs.py')
-    ap.add_argument('--log', help='файл лога/стектрейса напрямую')
-    ap.add_argument('--text', help='текст ошибки или стектрейс строкой')
-    ap.add_argument('--signature', action='append', default=[], help='сигнатура')
-    ap.add_argument('--repo', default='.', help='корень проекта (по умолчанию текущая директория)')
-    ap.add_argument('--since', help='начало окна для git log (YYYY-MM-DD HH:MM)')
-    ap.add_argument('--format', choices=['md', 'json'], default='md')
-    args = ap.parse_args(argv)
-
+def build(args):
+    """Собирает связь ошибок с кодом. Вынесено из `main`, чтобы оркестратор мог
+    получить те же данные напрямую, без перехвата вывода."""
     repo = os.path.abspath(args.repo)
     if not os.path.isdir(repo):
         raise SystemExit('Нет такой директории: %s' % repo)
@@ -456,8 +520,14 @@ def main(argv=None):
     blob = '\n'.join(texts)
     index = index_by_basename(repo)
 
+    # проверяем репозиторий до разбора фреймов: без git не нужно и пытаться
+    # запускать blame с историей — это десятки процессов ради пустого результата
+    git_ok = is_git_repo(repo)
+    runner = GitRunner(repo)
+    runner.enabled = git_ok
+
     frames = extract_frames(texts + signatures)
-    frames = resolve_frames(frames, index, repo)
+    frames = resolve_frames(frames, index, runner)
 
     phrases = []
     for sig in signatures:
@@ -475,7 +545,6 @@ def main(argv=None):
         found = grep_repo(repo, [short], limit=3)
         exceptions[exc] = found
 
-    git_ok = is_git_repo(repo)
     commits = commits_in_window(repo, first_ts, last_ts) if git_ok else []
 
     data = {
@@ -487,8 +556,25 @@ def main(argv=None):
         'phrases': phrases,
         'exceptions': exceptions,
         'commits': commits,
+        'git_calls': runner.calls,
+        'git_skipped': runner.skipped,
     }
+    return data
 
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description='Связывает ошибки из логов с кодом проекта и git-историей.')
+    ap.add_argument('--from-parsed', help='JSON-вывод parse_logs.py')
+    ap.add_argument('--log', help='файл лога/стектрейса напрямую')
+    ap.add_argument('--text', help='текст ошибки или стектрейс строкой')
+    ap.add_argument('--signature', action='append', default=[], help='сигнатура')
+    ap.add_argument('--repo', default='.', help='корень проекта (по умолчанию текущая директория)')
+    ap.add_argument('--since', help='начало окна для git log (YYYY-MM-DD HH:MM)')
+    ap.add_argument('--format', choices=['md', 'json'], default='md')
+    args = ap.parse_args(argv)
+
+    data = build(args)
     if args.format == 'json':
         json.dump(data, sys.stdout, ensure_ascii=False, indent=2, default=str)
         sys.stdout.write('\n')

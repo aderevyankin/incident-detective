@@ -28,6 +28,10 @@ if sys.version_info < (3, 8):
                      % (sys.version.split()[0], sys.executable))
     sys.exit(2)
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from kb_common import MAX_SUMMARY_CHARS  # noqa: E402
+
 MAX_LINE = 8192
 LOG_EXTS = ('.log', '.txt', '.json', '.jsonl', '.ndjson', '.out', '.err')
 
@@ -115,8 +119,8 @@ TS_SPECS = [
 ]
 
 
-def find_timestamp(text, limit=64):
-    """Возвращает (datetime|None, end_pos) для первого таймстемпа в начале строки."""
+def find_timestamp_full(text, limit=64):
+    """Возвращает (datetime|None, end_pos, start_pos) для первого таймстемпа."""
     head = text[:limit]
     best = None
     for rx, fn in TS_SPECS:
@@ -131,9 +135,19 @@ def find_timestamp(text, limit=64):
             dt = None
         if dt is not None:
             best = (dt, m.end(), m.start())
+            # раньше нулевой позиции совпадения быть не может, а таймстемп в
+            # начале строки — обычный случай: остальные шаблоны проверять незачем
+            if m.start() == 0:
+                break
     if best:
-        return best[0], best[1]
-    return None, 0
+        return best
+    return None, 0, 0
+
+
+def find_timestamp(text, limit=64):
+    """Возвращает (datetime|None, end_pos) для первого таймстемпа в начале строки."""
+    dt, end, _ = find_timestamp_full(text, limit)
+    return dt, end
 
 
 def parse_time_arg(value):
@@ -296,12 +310,16 @@ def _stringify(val):
 
 class Record(object):
     __slots__ = ('ts', 'level', 'message', 'source', 'origin', 'line_no',
-                 'fmt', 'trace', 'status', 'raw')
+                 'fmt', 'trace', 'status', 'raw', 'ts_hint', '_text')
 
-    def __init__(self, origin, line_no, raw):
+    def __init__(self, origin, line_no, raw, ts_hint=None):
         self.origin = origin
         self.line_no = line_no
         self.raw = [raw]
+        self._text = raw
+        # (datetime, end_pos) от проверки «начало ли это записи»: тот же поиск
+        # таймстемпа, что нужен разбору, — второй раз его делать незачем
+        self.ts_hint = ts_hint
         self.ts = None
         self.level = None
         self.message = raw
@@ -312,7 +330,12 @@ class Record(object):
 
     @property
     def raw_text(self):
-        return '\n'.join(self.raw)
+        # к сырому тексту обращаются несколько раз за запись — при разборе, при
+        # поиске классов исключений, при сохранении примера; склеивать список
+        # заново каждый раз незачем, а однострочной записи склейка не нужна вовсе
+        if self._text is None:
+            self._text = self.raw[0] if len(self.raw) == 1 else '\n'.join(self.raw)
+        return self._text
 
 
 def parse_json_line(rec, text):
@@ -412,7 +435,10 @@ BRACKET_SRC_RE = re.compile(r'\[([\w.\-]{2,60})\]')
 
 
 def parse_plain_line(rec, text):
-    ts, end = find_timestamp(text)
+    if rec.ts_hint is not None and rec.raw[0] == text:
+        ts, end = rec.ts_hint
+    else:
+        ts, end = find_timestamp(text)
     rec.ts = ts
     rest = text[end:] if ts else text
     m = LEVEL_RE.search(rest[:120])
@@ -428,30 +454,45 @@ def parse_plain_line(rec, text):
     return True
 
 
-def is_record_start(text):
-    """Начинается ли новая запись — иначе строка считается продолжением."""
+def classify_line(text):
+    """Возвращает (начало ли записи, ts_hint).
+
+    Таймстемп ищется здесь не более одного раза и передаётся дальше в `Record`:
+    разбору он нужен снова, а на больших логах повторный поиск — заметная доля
+    всей работы. Дешёвые признаки проверяются раньше поиска, чтобы строки
+    продолжения стектрейса не оплачивали его вовсе.
+    """
     stripped = text.strip()
     if not stripped:
-        return False
+        return False, None
     if stripped[0] == '{' and stripped[-1] == '}':
-        return True
+        return True, None
     if stripped[0] in ' \t':
-        return False
-    if find_timestamp(text, limit=48)[0] is not None:
-        return True
+        return False, None
+    dt, end, _ = find_timestamp_full(text, limit=64)
+    hint = (dt, end)
+    # прежняя проверка искала в первых 48 символах: совпадение считается
+    # найденным, только если оно целиком помещается в этот отрезок
+    if dt is not None and end <= 48:
+        return True, hint
     if NGINX_RE.match(text):
-        return True
+        return True, hint
     # явные маркеры начала ошибки без таймстемпа
     if stripped.startswith(('Traceback (most recent call last)', 'panic:', 'fatal error:')):
-        return True
+        return True, hint
     # logfmt без таймстемпа: level=error msg="..."
     if re.match(r'^[A-Za-z_][\w.\-]*=', stripped) and \
             re.search(r'\b(level|severity|lvl|msg|message|time|ts)=', stripped[:200]):
-        return True
+        return True, hint
     # продолжения стектрейсов
     if re.match(r'^\s*(at |Caused by:|\.{3} \d+ more|File ")', text):
-        return False
-    return False
+        return False, hint
+    return False, hint
+
+
+def is_record_start(text):
+    """Начинается ли новая запись — иначе строка считается продолжением."""
+    return classify_line(text)[0]
 
 
 def parse_record(rec):
@@ -484,51 +525,125 @@ def parse_record(rec):
     return rec
 
 
-def read_records(sources, encoding, max_lines):
+class PreFilter(object):
+    """Отсев записей до полного разбора.
+
+    Фильтры в `analyze` применяются к разобранной записи: формат определён, поля
+    извлечены, шаблон построен — и только потом запись выбрасывается. На больших
+    логах именно эта работа и составляет основное время: при `--level ERROR`
+    девять записей из десяти разбираются, чтобы быть отброшенными.
+
+    Здесь то же решение принимается по сырому тексту уже собранной записи, до
+    разбора. Запись собрана целиком, вместе с продолжениями, поэтому стектрейс не
+    разваливается: строка `at com.acme...` живёт или умирает вместе со своей
+    первой строкой, а не сама по себе.
+
+    Отсев консервативный. Отбрасывается только то, про что по сырому тексту можно
+    сказать наверняка: уровень распознан и он ниже требуемого, время распознано и
+    лежит вне окна. Всё неоднозначное уходит в разбор и фильтруется как раньше —
+    потерянная запись в разборе инцидента дороже сэкономленных секунд.
+    """
+
+    __slots__ = ('min_ord', 'since', 'until', 'grep_rx', 'skipped')
+
+    def __init__(self, level=None, since=None, until=None, grep=None):
+        self.min_ord = LEVEL_ORD[level] if level else None
+        self.since = since
+        self.until = until
+        self.grep_rx = re.compile(grep, re.IGNORECASE) if grep else None
+        self.skipped = 0
+
+    def active(self):
+        return (self.min_ord is not None or self.since is not None
+                or self.until is not None or self.grep_rx is not None)
+
+    def skip(self, rec):
+        head = rec.raw[0]
+        if self.min_ord is not None:
+            m = LEVEL_RE.search(head[:200])
+            if m:
+                level = LEVEL_ALIASES.get(m.group(1).upper())
+                if level is not None and LEVEL_ORD.get(level, 2) < self.min_ord:
+                    self.skipped += 1
+                    return True
+        if self.since is not None or self.until is not None:
+            ts = rec.ts_hint[0] if rec.ts_hint else find_timestamp(head)[0]
+            if ts is not None:
+                if self.since is not None and ts < self.since:
+                    self.skipped += 1
+                    return True
+                if self.until is not None and ts > self.until:
+                    self.skipped += 1
+                    return True
+        if self.grep_rx is not None and not self.grep_rx.search(rec.raw_text):
+            self.skipped += 1
+            return True
+        return False
+
+
+def read_records(sources, encoding, max_lines, prefilter=None):
+    keep = prefilter.skip if (prefilter is not None and prefilter.active()) else None
     current = None
     for origin, line_no, text in iter_lines(sources, encoding, max_lines):
         if not text.strip():
             continue
         if current is None:
-            current = Record(origin, line_no, text)
+            current = Record(origin, line_no, text, classify_line(text)[1])
             continue
-        if is_record_start(text) or origin != current.origin:
-            yield parse_record(current)
-            current = Record(origin, line_no, text)
+        start, hint = classify_line(text)
+        if start or origin != current.origin:
+            if keep is None or not keep(current):
+                yield parse_record(current)
+            current = Record(origin, line_no, text, hint)
         else:
             if len(current.raw) < 60:
                 current.raw.append(text)
+                current._text = None
     if current is not None:
-        yield parse_record(current)
+        if keep is None or not keep(current):
+            yield parse_record(current)
 
 
 # --------------------------------------------------------------------------
 # Шаблонизация
 # --------------------------------------------------------------------------
 
+# Третий элемент — подстрока, без которой маска заведомо не сработает: проверка
+# `in` обходится в разы дешевле запуска регулярки, а сообщение обычно содержит
+# лишь пару из этих признаков. None — маску надо пробовать всегда.
 MASKS = [
-    (re.compile(r'\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s"\'<>]+'), '<url>'),
-    (re.compile(r'\b[\w.\-+]+@[\w.\-]+\.\w{2,}\b'), '<email>'),
+    (re.compile(r'\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s"\'<>]+'), '<url>', '://'),
+    (re.compile(r'\b[\w.\-+]+@[\w.\-]+\.\w{2,}\b'), '<email>', '@'),
     (re.compile(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
-                r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'), '<uuid>'),
-    (re.compile(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+\-]\d{2}:?\d{2})?'), '<ts>'),
-    (re.compile(r'\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b'), '<ip>'),
-    (re.compile(r'\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b'), '<time>'),
-    (re.compile(r'(?<![\w.])(?:/[\w.\-@]+){2,}/?'), '<path>'),
-    (re.compile(r'\b(?:0x)?[0-9a-fA-F]{12,}\b'), '<hex>'),
-    (re.compile(r'"[^"\n]{0,200}"'), '<str>'),
-    (re.compile(r"'[^'\n]{0,200}'"), '<str>'),
-    (re.compile(r'\b[\w\-]*\d[\w\-]*\b'), '<n>'),
+                r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'), '<uuid>', '-'),
+    (re.compile(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+\-]\d{2}:?\d{2})?'),
+     '<ts>', '-'),
+    (re.compile(r'\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b'), '<ip>', '.'),
+    (re.compile(r'\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b'), '<time>', ':'),
+    (re.compile(r'(?<![\w.])(?:/[\w.\-@]+){2,}/?'), '<path>', '/'),
+    (re.compile(r'\b(?:0x)?[0-9a-fA-F]{12,}\b'), '<hex>', None),
+    (re.compile(r'"[^"\n]{0,200}"'), '<str>', '"'),
+    (re.compile(r"'[^'\n]{0,200}'"), '<str>', "'"),
+    (re.compile(r'\b[\w\-]*\d[\w\-]*\b'), '<n>', None),
 ]
 
 WS_RE = re.compile(r'\s+')
 
 
+SQUEEZE_N_RE = re.compile(r'(<n>[ ,.]*){2,}')
+
+
 def templatize(message, limit=180):
+    # Обрезать сообщение до замен нельзя, хотя это и выглядит выгодным: маски
+    # сжимают текст в десятки раз («…200 символов…» → <str>), поэтому отрезанный
+    # хвост влияет на итоговый шаблон. Проверено на логах с длинными сообщениями:
+    # обрезка до замен разбивает 7 групп на 10 и портит частоты.
     text = message.replace('\n', ' ⏎ ')
-    for rx, repl in MASKS:
-        text = rx.sub(repl, text)
-    text = re.sub(r'(<n>[ ,.]*){2,}', '<n> ', text)
+    for rx, repl, needle in MASKS:
+        if needle is None or needle in text:
+            text = rx.sub(repl, text)
+    if '<n>' in text:
+        text = SQUEEZE_N_RE.sub('<n> ', text)
     text = WS_RE.sub(' ', text).strip(' \t|,;:-')
     if len(text) > limit:
         text = text[:limit] + '…'
@@ -643,6 +758,7 @@ def analyze(records, args):
     return {
         'groups': ordered, 'stats': stats, 'hist': hist, 'err_hist': err_hist,
         'trace_errors': trace_errors, 'first_ts': first_ts, 'last_ts': last_ts,
+        'prefiltered': 0,
     }
 
 
@@ -687,15 +803,41 @@ def fmt_short(dt):
 
 
 def render_md(result, args, out):
+    """Сводка в пределах бюджета объёма.
+
+    Сводка едет в контекст агента и остаётся там до конца разбора, поэтому её
+    объём ограничен. Режется не текст, а число показанных шаблонов: обрубленная
+    на полуслове сводка хуже короткой. Хвостовые разделы — исключения, статусы,
+    гистограмма, сигнатуры — считаются заранее и место под них резервируется:
+    сигнатуры нужны следующим шагам разбора, терять их нельзя.
+    """
+    budget = getattr(args, 'max_chars', 0) or 0
+    if budget <= 0:
+        return _render_md(result, args, out, None)
+    head = io.StringIO()
+    _render_md(result, args, head, None, head_only=True)
+    tail = io.StringIO()
+    _render_tail(result, args, tail)
+    # 320 символов — заголовок секции шаблонов и строка о том, что часть скрыта:
+    # они пишутся уже после подгонки, и без резерва сводка вылезает за бюджет
+    room = budget - len(head.getvalue()) - len(tail.getvalue()) - 320
+    _render_md(result, args, out, room)
+
+
+def _render_md(result, args, out, room, head_only=False):
     stats = result['stats']
     w = out.write
     w('# Сводка логов\n\n')
     origins = ', '.join('%s (%d)' % (o, c) for o, c in stats['origins'].most_common(8))
     w('- Источники: %s\n' % (origins or 'нет данных'))
-    w('- Записей: %d' % stats['records'])
-    if stats['filtered'] != stats['records']:
+    prefiltered = result.get('prefiltered', 0)
+    w('- Записей: %d' % (stats['records'] + prefiltered))
+    if stats['filtered'] != stats['records'] + prefiltered:
         w(' (после фильтров: %d)' % stats['filtered'])
     w('\n')
+    if prefiltered:
+        w('- Отсеяно фильтром до разбора: %d — распределение по уровням, форматам и\n'
+          '  компонентам ниже посчитано по оставшимся записям\n' % prefiltered)
     if result['first_ts']:
         span = result['last_ts'] - result['first_ts']
         w('- Период: %s — %s (%s)\n' % (fmt_ts(result['first_ts']),
@@ -711,22 +853,61 @@ def render_md(result, args, out):
             '%s (%d)' % (s, c) for s, c in stats['services'].most_common(6)))
     w('\n')
 
+    if head_only:
+        return
+
     problems = [g for g in result['groups'] if LEVEL_ORD.get(g.level, 2) >= LEVEL_ORD['WARN']]
     others = [g for g in result['groups'] if LEVEL_ORD.get(g.level, 2) < LEVEL_ORD['WARN']]
 
     if problems:
+        wanted = problems[:args.top]
+        shown = fit_groups(wanted, room) if room is not None else len(wanted)
         w('## Ошибки и предупреждения (топ %d из %d шаблонов)\n\n'
-          % (min(args.top, len(problems)), len(problems)))
-        render_groups(problems[:args.top], w, start=1)
+          % (shown, len(problems)))
+        render_groups(wanted[:shown], w, start=1)
+        hidden = len(problems) - shown
+        if hidden > 0:
+            # причины разные, и путать их не надо: `--top` пользователь задал сам,
+            # а бюджет объёма — решение скрипта, о котором он и должен сказать
+            why = ('сводка ограничена по объёму' if shown < len(wanted)
+                   else 'показан топ %d, задайте `--top` больше' % args.top)
+            w('_Не показано шаблонов: %d — %s. '
+              'Полный разбор: `--format json > файл`, отдельная группа: `--context N`._\n\n'
+              % (hidden, why))
     else:
+        shown = 0
         w('## Ошибок и предупреждений не найдено\n\n'
           'Если инцидент точно был — сбой мог не логироваться как ошибка '
           '(проверь обрыв лога, OOM, kill) или окно выбрано мимо.\n\n')
 
     if others and args.show_info:
         w('## Прочие сообщения (топ 5)\n\n')
-        render_groups(others[:5], w, start=len(problems[:args.top]) + 1)
+        render_groups(others[:5], w, start=shown + 1)
 
+    _render_tail(result, args, out)
+
+
+def group_size(grp):
+    """Сколько символов займёт группа в сводке — считаем по факту рендера."""
+    buf = io.StringIO()
+    render_groups([grp], buf.write, start=1)
+    return len(buf.getvalue())
+
+
+def fit_groups(groups, room):
+    """Сколько групп поместится в отведённый объём. Минимум одна: сводка без
+    единого шаблона не отвечает на вопрос, ради которого её читают."""
+    used = 0
+    for i, grp in enumerate(groups):
+        used += group_size(grp)
+        if used > room and i > 0:
+            return i
+    return len(groups)
+
+
+def _render_tail(result, args, out):
+    stats = result['stats']
+    w = out.write
     if stats['exceptions']:
         w('## Exception-классы\n\n')
         for exc, cnt in stats['exceptions'].most_common(10):
@@ -822,7 +1003,9 @@ def render_json(result, args, out):
     stats = result['stats']
     payload = {
         'stats': {
-            'records': stats['records'],
+            'records': stats['records'] + result.get('prefiltered', 0),
+            'parsed': stats['records'],
+            'prefiltered': result.get('prefiltered', 0),
             'filtered': stats['filtered'],
             'levels': dict(stats['levels']),
             'formats': dict(stats['formats']),
@@ -898,6 +1081,9 @@ def main(argv=None):
     ap.add_argument('--histogram', action='store_true', help='всегда показывать гистограмму')
     ap.add_argument('--show-info', action='store_true', help='включить не-ошибочные шаблоны')
     ap.add_argument('--format', choices=['md', 'json'], default='md')
+    ap.add_argument('--max-chars', type=int, default=MAX_SUMMARY_CHARS,
+                    help='предельный объём сводки в символах (%d), 0 — без предела'
+                         % MAX_SUMMARY_CHARS)
     ap.add_argument('--max-lines', type=int, default=2000000)
     ap.add_argument('--encoding', default='utf-8')
     args = ap.parse_args(argv)
@@ -909,14 +1095,21 @@ def main(argv=None):
     if not sources:
         raise SystemExit('Нечего парсить: источники не найдены')
 
+    # при --trace и --context нужны все записи: цепочку запроса и сырые строки
+    # группы нельзя собрать из того, что отсеяно до разбора
     keep_records = bool(args.trace)
+    prefilter = None
+    if not args.trace and not args.context:
+        prefilter = PreFilter(level=args.level, since=args.since,
+                              until=args.until, grep=args.grep)
     records = []
-    stream = read_records(sources, args.encoding, args.max_lines)
+    stream = read_records(sources, args.encoding, args.max_lines, prefilter)
     if keep_records:
         records = list(stream)
         stream = records
 
     result = analyze(stream, args)
+    result['prefiltered'] = prefilter.skipped if prefilter is not None else 0
     out = sys.stdout
 
     if args.trace:
