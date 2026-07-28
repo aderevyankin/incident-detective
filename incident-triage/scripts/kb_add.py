@@ -16,10 +16,14 @@ if sys.version_info < (3, 8):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kb_common import (  # noqa: E402
-    SECTIONS, dump_frontmatter, kb_dir, load_incidents, load_parsed, next_id,
-    norm_signature, now, parse_frontmatter, run_script, signatures_from_parsed,
-    slugify,
+    DEFAULT_KB, ENV_KB, KB_DEFAULT, KB_PROJECT, SECTIONS, dump_frontmatter, kb_is_empty,
+    load_incidents, load_parsed, next_id, norm_signature, now, project_kb_dir,
+    resolve_kb, run_script, signatures_from_parsed, slugify,
 )
+
+# Код возврата «расположение базы не выбрано»: отличается и от ошибки аргументов
+# (2), и от обычного отказа (1), чтобы агент опознал его без разбора текста.
+RC_KB_NOT_CHOSEN = 3
 
 SECRET_RE = re.compile(
     r'(?i)(password|passwd|secret|token|api[_-]?key|authorization|bearer|'
@@ -92,7 +96,21 @@ def main(argv=None):
     ap.add_argument('--dry-run', action='store_true', help='показать результат, но не писать')
     args = ap.parse_args(argv)
 
-    directory = kb_dir(args.kb)
+    directory, source = resolve_kb(args.kb)
+    if source == KB_DEFAULT and kb_is_empty(directory):
+        # Расположение никто не выбирал: ни флага, ни переменной, ни базы в
+        # корне репозитория, ни записей внутри скилла. Спросить скрипт не может
+        # — вопрос задаёт агент, — поэтому он сообщает об этом и ничего не
+        # создаёт: директория базы не должна появляться молча.
+        sys.stderr.write(
+            'Расположение базы знаний не выбрано — запись не сделана.\n'
+            'Спросите пользователя, где держать базу, и повторите запуск с --kb:\n'
+            '  в корне проекта: %s\n'
+            '  в директории скилла: %s\n'
+            'Выбор закрепляется строкой export %s=<путь> в профиле оболочки.\n'
+            % (project_kb_dir(), DEFAULT_KB, ENV_KB))
+        return RC_KB_NOT_CHOSEN
+
     incidents = load_incidents(directory)
 
     signatures = list(args.signature)
@@ -201,6 +219,11 @@ def main(argv=None):
 
     action = 'дополнена' if target is not None else 'создана'
     print('Запись %s: %s' % (action, path))
+    if source == KB_PROJECT:
+        # Путь не задавали ни флагом, ни переменной — база нашлась в репозитории.
+        # Директорию мог завести коллега, и запись в общий репозиторий не должна
+        # пройти незамеченной.
+        print('база знаний найдена в корне репозитория: %s' % directory)
     print('id: %s' % meta['id'])
     if meta.get('signatures'):
         print('сигнатур: %d' % len(meta['signatures']))

@@ -5,11 +5,16 @@
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_KB = os.path.join(SKILL_DIR, 'kb')
+
+# Куда предлагается положить базу в проекте. Каталог видимый: база в markdown
+# ради того, чтобы её читал человек без агента.
+PROJECT_KB_RELPATH = os.path.join('memory', 'knowledgebase')
 
 SECTIONS = ['Симптомы', 'Диагностика', 'Причина', 'Решение', 'Проверка', 'Заметки']
 
@@ -132,8 +137,93 @@ def run_script(main, path, argv=None):
     return code
 
 
+# --------------------------------------------------------------------------
+# Расположение базы знаний
+# --------------------------------------------------------------------------
+
+ENV_KB = 'INCIDENT_KB_DIR'
+
+# Каким шагом разрешён путь. Источник нужен не скриптам, а агенту: по нему он
+# понимает, выбирал ли пользователь расположение вообще.
+KB_FLAG = 'flag'          # --kb
+KB_ENV = 'env'            # INCIDENT_KB_DIR
+KB_PROJECT = 'project'    # база в корне текущего репозитория — выбор уже сделан
+KB_DEFAULT = 'default'    # директория внутри скилла — выбора не было
+
+_GIT_TOP = {}
+
+
+def git_toplevel(start=None):
+    """Корень git-репозитория для директории или None, если репозитория нет."""
+    start = os.path.abspath(start or os.getcwd())
+    if start in _GIT_TOP:
+        return _GIT_TOP[start]
+    top = None
+    try:
+        proc = subprocess.run(['git', '-C', start, 'rev-parse', '--show-toplevel'],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=5)
+        if proc.returncode == 0:
+            text = proc.stdout.decode('utf-8', 'replace').strip()
+            if text:
+                top = os.path.abspath(text)
+    except (OSError, subprocess.SubprocessError):
+        # git может отсутствовать — это не ошибка, просто нет шага «база проекта»
+        top = None
+    _GIT_TOP[start] = top
+    return top
+
+
+def project_root(start=None):
+    """Корень проекта: корень репозитория, иначе текущая директория."""
+    return git_toplevel(start) or os.path.abspath(start or os.getcwd())
+
+
+def project_kb_dir(start=None):
+    """Путь, который предлагается как «база в корне проекта»."""
+    return os.path.join(project_root(start), PROJECT_KB_RELPATH)
+
+
+def kb_is_empty(directory):
+    """Нет ли в директории записей.
+
+    Признак — наличие `INC-*.md`, а не самой директории: пустая директория
+    приезжает вместе со скиллом и выбором расположения не является.
+    """
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return True
+    for name in names:
+        if name.upper().startswith('INC-') and name.lower().endswith('.md'):
+            return False
+    return True
+
+
+def resolve_kb(explicit=None, start=None):
+    """(путь, источник) — разрешение пути к базе знаний.
+
+    Порядок: `--kb` → `INCIDENT_KB_DIR` → база в корне текущего репозитория,
+    **если она там уже существует** → директория внутри скилла. Третий шаг —
+    не поиск базы по кандидатам, а чтение обратно уже сделанного выбора:
+    директория появляется только после явного ответа пользователя. Поэтому
+    здесь ничего не создаётся.
+    """
+    if explicit:
+        return os.path.abspath(explicit), KB_FLAG
+    from_env = os.environ.get(ENV_KB)
+    if from_env:
+        return os.path.abspath(from_env), KB_ENV
+    top = git_toplevel(start)
+    if top:
+        candidate = os.path.join(top, PROJECT_KB_RELPATH)
+        if os.path.isdir(candidate):
+            return os.path.abspath(candidate), KB_PROJECT
+    return os.path.abspath(DEFAULT_KB), KB_DEFAULT
+
+
 def kb_dir(explicit=None):
-    return os.path.abspath(explicit or os.environ.get('INCIDENT_KB_DIR') or DEFAULT_KB)
+    return resolve_kb(explicit)[0]
 
 
 # --------------------------------------------------------------------------
