@@ -37,7 +37,6 @@ tests/                     проверки скриптов; run.py — еди�
 tools/bench.py             бюджеты скорости
 tools/check_compat.py      разбираются ли скрипты минимальной версией Python
 openspec/                  спеки и предложения по изменениям
-install.sh                 копирование скилла в ~/.qwen/skills или ./.qwen/skills
 README.md                  вход в проект для человека
 AI_CONTEXT.md              этот файл; AGENTS.md и GIGACODE.md — симлинки на него
 ```
@@ -49,8 +48,10 @@ python3 tests/run.py              весь набор проверок (плюс
 python3 tests/run.py test_parse   один файл проверок
 python3 tools/bench.py            бюджеты скорости, ненулевой код при нарушении
 openspec validate --specs         спеки
-./install.sh [--project]          установка
 ```
+
+Установщика нет: скилл разворачивается копированием `incident-detective/` в директорию
+скиллов платформы — репозиторий клонируют или дают ссылку на него AI-ассистенту.
 
 CI (`.github/workflows/checks.yml`) гоняет `tests/run.py` на **Python 3.8** — на более
 новом интерпретаторе не заметили бы, что в скрипт заехала возможность языка, которой на

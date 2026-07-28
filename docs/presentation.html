@@ -308,12 +308,13 @@
 
   <section class="slide" data-title="Установка и что дальше">
     <h2>Установка и что дальше</h2>
-    <pre>./install.sh              # личный скилл: ~/.qwen/skills/incident-detective
-./install.sh --project    # проектный: ./.qwen/skills/incident-detective</pre>
-    <p>Установщик необязателен: скилл работает и при обычном копировании директории
-      <code>incident-detective/</code>, в закрытых контурах так чаще всего и бывает.
-      Единственное требование окружения: <code>python3</code> 3.8 или новее, только
-      стандартная библиотека.</p>
+    <pre>cp -R incident-detective ~/.qwen/skills/incident-detective   # личный скилл
+cp -R incident-detective .qwen/skills/incident-detective     # проектный</pre>
+    <p>Установщика нет: скилл ставится копированием директории
+      <code>incident-detective/</code> из выгрузки репозитория — либо ссылку на
+      репозиторий дают своему AI-ассистенту, и он делает то же самое. Единственное
+      требование окружения: <code>python3</code> 3.8 или новее, только стандартная
+      библиотека.</p>
     <p>Разбор не обрывается на выводе причины. Следующим шагом скилл предлагает выбор: внести
       правки, завести баг или задачу на доисследование. Ведущий вариант зависит от того же
       уровня уверенности: чинить по гипотезе нечего, а баг с выдуманной причиной хуже честной
@@ -355,8 +356,7 @@
   "incident-detective/scripts/triage.py",
   "tests/fixtures/logs/payment.log",
   "tests/fixtures/kb/INC-2026-07-001-payment-pool-exhausted.md",
-  "README.md",
-  "install.sh"
+  "README.md"
 ]
 </script>
 
