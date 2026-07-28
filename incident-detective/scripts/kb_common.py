@@ -918,6 +918,13 @@ def _fmt_value(val):
     return _fmt_scalar(val)
 
 
+# Списочные поля, которые не выпадают из фронтматтера пустыми: формат записи
+# числит их обязательными (канон — references/kb-format.md, таблица полей), а
+# отсутствие ключа неотличимо от «поле забыли». Прочие списки пустыми
+# опускаются: пустой ключ ничего не сообщает, а запись читают глазами.
+MANDATORY_LIST_FIELDS = ('stands', 'tags')
+
+
 def dump_frontmatter(meta):
     lines = ['---']
     order = ['id', 'kind', 'title', 'date', 'stand', 'stands', 'services', 'tags',
@@ -930,7 +937,7 @@ def dump_frontmatter(meta):
         if isinstance(val, dict):
             lines.append('%s: %s' % (key, _fmt_value(val)))
         elif isinstance(val, list):
-            if not val:
+            if not val and key not in MANDATORY_LIST_FIELDS:
                 continue
             if any(isinstance(v, (dict, list)) for v in val):
                 # список пометок карты: разбивать его на блок незачем — он
