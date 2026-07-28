@@ -11,6 +11,12 @@ import json
 import os
 import sys
 
+# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
+if sys.version_info < (3, 8):
+    sys.stderr.write('incident-triage: нужен Python 3.8 или новее, запущен %s (%s)\n'
+                     % (sys.version.split()[0], sys.executable))
+    sys.exit(2)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kb_common import (  # noqa: E402

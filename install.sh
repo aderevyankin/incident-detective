@@ -32,6 +32,14 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
+# Проверка здесь — удобство, а не гарантия: скилл часто разворачивают копированием
+# директории, без запуска установщика. Пригодность окружения скилл проверяет сам
+# перед разбором (шаг 1 SKILL.md).
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
+    echo "Нужен python3 версии 3.8 или новее, найден $(python3 -V 2>&1)." >&2
+    exit 1
+fi
+
 mkdir -p "$DEST_ROOT"
 
 if [[ -d "$DEST" ]]; then

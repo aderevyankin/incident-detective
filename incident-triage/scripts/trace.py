@@ -23,6 +23,12 @@ import sys
 from collections import Counter, OrderedDict
 from datetime import datetime, timedelta
 
+# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
+if sys.version_info < (3, 8):
+    sys.stderr.write('incident-triage: нужен Python 3.8 или новее, запущен %s (%s)\n'
+                     % (sys.version.split()[0], sys.executable))
+    sys.exit(2)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import parse_logs as pl  # noqa: E402
