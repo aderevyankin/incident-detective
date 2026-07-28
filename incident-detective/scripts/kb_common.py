@@ -349,6 +349,135 @@ def kb_dir(explicit=None):
 
 
 # --------------------------------------------------------------------------
+# Очистка от секретов и персональных данных
+# --------------------------------------------------------------------------
+#
+# Общая для всех путей, по которым текст разбора покидает разбор: запись в
+# базу знаний, текст тикета, постмортем. Один список правил — единственный
+# источник истины; путь, забывший её вызвать, считается дефектом (см.
+# openspec/changes/add-pii-redaction).
+#
+# Что НЕ маскируется — сознательно, а не по недосмотру: идентификаторы
+# запросов и trace id, номера заказов и транзакций, имена сервисов и хостов,
+# версии, пути в коде, IP-адреса. Без них разбор бессмысленен, персональными
+# данными они не являются.
+
+# Секрет, подписанный именем поля: password=..., Authorization: Bearer ...
+_SECRET_KEY = (r'(?:password|passwd|secret|token|api[_-]?key|authorization|'
+              r'bearer|private[_-]?key|access[_-]?key)')
+# Служебное слово, которое иногда стоит между именем поля и значением
+# (`Authorization: Bearer <токен>`) — само по себе не значение, и маскировать
+# его вместо токена — тот самый подтверждённый дефект.
+_SECRET_CONNECTOR = r'(?:bearer|basic|token|key)'
+
+# Токены, узнаваемые по форме значения, а не по имени поля: JWT и
+# распространённые префиксы ключей API.
+_TOKEN_SHAPE = (r'(?:eyJ[\w-]+\.[\w-]+\.[\w-]+|sk-[A-Za-z0-9]{16,}|'
+               r'gh[oprsu]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|'
+               r'xox[baprs]-[A-Za-z0-9-]{10,})')
+
+# Порядок альтернатив — это порядок приоритета: движок берёт первую
+# сработавшую на данной позиции, поэтому специфичные по форме шаблоны стоят
+# раньше общих числовых. Секрет по имени поля — первым: если у значения есть
+# подпись поля, она сильнее любой другой эвристики.
+_PII_RE = re.compile(
+    r'\b(?P<secret_field>%s)\b\s*[:=]\s*(?:%s\s+)?(?P<secret_val>\S+)'
+    r'|\b(?P<urlcred_scheme>[a-zA-Z][\w+.-]*://)(?P<urlcred_user>[^\s/:@]+):(?P<urlcred_pass>[^\s/@]+)@'
+    r'|(?P<token>%s)'
+    r'|(?P<email>[\w.+-]+@[\w-]+\.[\w.-]+)'
+    r'|(?P<snils>\d{3}-\d{3}-\d{3}[ ]\d{2})'
+    r'|(?P<passport>\d{2}[ ]\d{2}[ ]\d{6})'
+    r'|(?P<account>\b\d{20}\b)'
+    r'|(?P<card>(?:\d{4}[ -]){3}\d{4}\b|\b\d{13,19}\b)'
+    # Телефон распознаётся по характерной форме записи (код страны или
+    # скобки вокруг кода города), а не по произвольному числу цифр с
+    # разделителями — иначе под шаблон попадали бы номера заказов вида
+    # `order-2026-0007123`.
+    r'|(?P<phone>(?<!\d)(?:\+7|8)[\s-]?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)'
+    r'|(?<!\d)\+?1[\s.-]\d{3}[\s.-]\d{3}[\s.-]\d{4}(?!\d)'
+    r'|(?<!\d)\(\d{3}\)[\s.-]?\d{3}[\s.-]?\d{4}(?!\d))'
+    % (_SECRET_KEY, _SECRET_CONNECTOR, _TOKEN_SHAPE), re.IGNORECASE)
+
+# Что называть пользователю в сводке срабатываний — без исходных значений.
+PII_KIND_LABELS = {
+    'secret': 'секрет',
+    'urlcred': 'учётные данные в URL',
+    'token': 'токен',
+    'email': 'email',
+    'card': 'карта',
+    'account': 'счёт',
+    'person_id': 'ид. физлица',
+    'phone': 'телефон',
+}
+
+
+def _luhn_ok(digits):
+    """Контрольная сумма Луна: отсекает числа, похожие на карту, но не карты."""
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def scrub_text(text):
+    """Маскирует секреты и персональные данные в тексте.
+
+    Возвращает (очищенный текст, {вид: количество}). Сопоставление метки с
+    исходным значением нигде не сохраняется — не обратимо. Одинаковое
+    значение внутри текста маскируется одинаково: метка зависит только от
+    вида данных, а не от места совпадения.
+    """
+    if not text:
+        return text, {}
+    counts = {}
+
+    def repl(m):
+        if m.group('secret_field') is not None:
+            counts['secret'] = counts.get('secret', 0) + 1
+            return '%s=<redacted>' % m.group('secret_field')
+        if m.group('urlcred_scheme') is not None:
+            counts['urlcred'] = counts.get('urlcred', 0) + 1
+            return '%s<redacted>@' % m.group('urlcred_scheme')
+        kind = m.lastgroup
+        value = m.group(0)
+        if kind == 'card':
+            digits = re.sub(r'\D', '', value)
+            if 13 <= len(digits) <= 19 and _luhn_ok(digits):
+                counts['card'] = counts.get('card', 0) + 1
+                return '<card:…%s>' % digits[-4:]
+            # не прошло контрольную сумму — не карта, оставляем как есть
+            return value
+        if kind in ('snils', 'passport'):
+            counts['person_id'] = counts.get('person_id', 0) + 1
+            return '<person_id>'
+        counts[kind] = counts.get(kind, 0) + 1
+        return '<%s>' % kind
+
+    new_text = _PII_RE.sub(repl, text)
+    return new_text, counts
+
+
+def merge_scrub_counts(target, extra):
+    for kind, n in (extra or {}).items():
+        target[kind] = target.get(kind, 0) + n
+    return target
+
+
+def render_scrub_summary(counts):
+    """Строка для пользователя: виды и количество, без исходных значений."""
+    if not counts:
+        return ''
+    parts = ['%s ×%d' % (PII_KIND_LABELS.get(k, k), n)
+            for k, n in sorted(counts.items())]
+    return 'Очистка сработала: ' + ', '.join(parts)
+
+
+# --------------------------------------------------------------------------
 # Мини-парсер frontmatter (подмножество YAML, без внешних зависимостей)
 # --------------------------------------------------------------------------
 

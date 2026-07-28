@@ -4,7 +4,6 @@
 
 import argparse
 import os
-import re
 import sys
 
 # Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
@@ -17,24 +16,29 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kb_common import (  # noqa: E402
     DEFAULT_KB, ENV_KB, KB_DEFAULT, KB_PROJECT, SECTIONS, dump_frontmatter, kb_is_empty,
-    load_incidents, load_parsed, next_id, norm_signature, now, project_kb_dir,
-    resolve_kb, run_script, signatures_from_parsed, slugify,
+    load_incidents, load_parsed, merge_scrub_counts, next_id, norm_signature, now,
+    project_kb_dir, render_scrub_summary, resolve_kb, run_script, scrub_text,
+    signatures_from_parsed, slugify,
 )
 
 # Код возврата «расположение базы не выбрано»: отличается и от ошибки аргументов
 # (2), и от обычного отказа (1), чтобы агент опознал его без разбора текста.
 RC_KB_NOT_CHOSEN = 3
 
-SECRET_RE = re.compile(
-    r'(?i)(password|passwd|secret|token|api[_-]?key|authorization|bearer|'
-    r'private[_-]?key|access[_-]?key)\s*[=:]\s*\S+')
 
+def scrub(text, counts=None):
+    """Вырезает секреты и персональные данные перед записью в базу.
 
-def scrub(text):
-    """Вырезает очевидные секреты перед записью в базу."""
+    Правила и сама функция очистки живут в `kb_common.scrub_text` — общие для
+    всех путей, которыми текст разбора покидает разбор. `counts` — словарь,
+    куда суммируются срабатывания по видам за весь запуск, если передан.
+    """
     if not text:
         return text
-    return SECRET_RE.sub(lambda m: m.group(0).split('=')[0].split(':')[0] + '=<redacted>', text)
+    clean, found = scrub_text(text)
+    if counts is not None:
+        merge_scrub_counts(counts, found)
+    return clean
 
 
 def split_csv(values):
@@ -113,15 +117,22 @@ def main(argv=None):
 
     incidents = load_incidents(directory)
 
-    signatures = list(args.signature)
+    # Сводка срабатываний очистки за весь запуск — по всем полям записи, а не
+    # только по текстам секций: заголовок, сигнатуры и значения из
+    # --from-parsed идут в базу тем же путём и чистятся так же.
+    scrub_counts = {}
+
+    signatures = [scrub(s, scrub_counts) for s in args.signature]
     services = split_csv(args.service)
     if args.from_parsed:
         parsed = load_parsed(args.from_parsed)
-        signatures.extend(signatures_from_parsed(parsed))
+        signatures.extend(scrub(s, scrub_counts) for s in signatures_from_parsed(parsed))
         # 'access' — служебный компонент nginx-парсера, не сервис
         services.extend([s for s in list(parsed.get('stats', {}).get('services', {}))[:3]
                          if s.lower() != 'access'])
     services = merge_list([], services)
+
+    title = scrub(args.title, scrub_counts) if args.title else args.title
 
     target = None
     if args.update:
@@ -132,7 +143,7 @@ def main(argv=None):
         if target is None:
             raise SystemExit('Запись %s не найдена в %s' % (args.update, directory))
 
-    if target is None and not args.title:
+    if target is None and not title:
         raise SystemExit('Для новой записи нужен --title')
 
     when = now()
@@ -141,7 +152,7 @@ def main(argv=None):
     if target is None:
         meta = {
             'id': next_id(incidents, when),
-            'title': args.title,
+            'title': title,
             'date': date,
             'stands': split_csv(args.stand),
             'services': services,
@@ -156,8 +167,8 @@ def main(argv=None):
         meta = dict(target['meta'])
         sections = dict(target['sections'])
         existing_body = target['body']
-        if args.title:
-            meta['title'] = args.title
+        if title:
+            meta['title'] = title
         meta['stands'] = merge_list(meta.get('stands'), split_csv(args.stand))
         meta['services'] = merge_list(meta.get('services'), services)
         meta['tags'] = merge_list(meta.get('tags'), split_csv(args.tags))
@@ -186,7 +197,7 @@ def main(argv=None):
     for name, value in updates:
         if not value:
             continue
-        value = scrub(value.strip())
+        value = scrub(value.strip(), scrub_counts)
         prev = sections.get(name, '').strip()
         if prev and prev != '_не заполнено_' and value not in prev:
             sections[name] = '%s\n\n_%s:_ %s' % (prev, date, value)
@@ -209,8 +220,14 @@ def main(argv=None):
         path = os.path.join(directory, fname)
 
     if args.dry_run:
+        # Текст здесь уже очищен — ровно то, что записалось бы. Отдельного
+        # прохода очистки для предпросмотра нет: dry-run не должен показывать
+        # то, чего запись на самом деле не сохранит.
         sys.stdout.write(text)
         sys.stdout.write('\n---\n[dry-run] записалось бы в %s\n' % path)
+        summary = render_scrub_summary(scrub_counts)
+        if summary:
+            sys.stdout.write('%s\n' % summary)
         return 0
 
     os.makedirs(directory, exist_ok=True)
@@ -227,6 +244,12 @@ def main(argv=None):
     print('id: %s' % meta['id'])
     if meta.get('signatures'):
         print('сигнатур: %d' % len(meta['signatures']))
+    summary = render_scrub_summary(scrub_counts)
+    if summary:
+        # Молчаливая очистка плоха с двух сторон: не заметишь ни лишней
+        # маскировки нужного идентификатора, ни того, что персональные данные
+        # вообще были в тексте.
+        print(summary)
 
     try:
         import kb_index
