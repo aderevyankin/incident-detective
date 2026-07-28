@@ -55,8 +55,10 @@ BUDGETS = {
                'title': 'triage.py (вся цепочка)'},
 }
 
-ORDER = ['parse_logs', 'parse_logs_level', 'parse_logs_window',
-         'kb_search', 'code_hints', 'confidence', 'triage']
+# «Сейчас» для замеряемых скриптов — фиксированное, как в tests/helpers.py: время
+# начала эталонного окна плюс запас, чтобы --since/--until в прогоне не зависели
+# от даты запуска бенчмарка.
+BENCH_NOW = '2026-07-29 00:00:00'
 
 
 # --- эталонный вход -------------------------------------------------------------
@@ -196,26 +198,91 @@ def generate_kb(kb_dir, count):
     run([sys.executable, os.path.join(SCRIPTS_DIR, 'kb_index.py'), '--kb', kb_dir])
 
 
+def generate_code_repo(path):
+    """Небольшой git-репозиторий для замера code_hints — вместо живого репозитория
+    скилла: замер должен зависеть от размера сгенерированного входа, а не от того,
+    сколько кода сейчас лежит в самом скилле, и не оставлять следов в рабочей копии.
+
+    Файлы и номера строк совпадают с тем, что ищет STACK: фреймы стектрейса
+    реально резолвятся в файлы, а не остаются «код внешней библиотеки».
+    """
+    base = os.path.join(path, 'src', 'com', 'acme', 'payment')
+    os.makedirs(base, exist_ok=True)
+
+    def java_file(name, target_line, body_line):
+        lines = ['// %s — сгенерировано для бенчмарка' % name]
+        while len(lines) < target_line - 1:
+            lines.append('    // padding line %d' % len(lines))
+        lines.append(body_line)
+        lines.append('}')
+        with open(os.path.join(base, name), 'w', encoding='utf-8') as fh:
+            fh.write('\n'.join(lines) + '\n')
+
+    java_file('PoolManager.java', 88, '    void acquire() { throw new SQLTimeoutException(); }')
+    java_file('PaymentService.java', 142, '    void charge() { pool.acquire(); }')
+    java_file('PaymentController.java', 57, '    void pay() { service.charge(); }')
+
+    def git(*args):
+        subprocess.run(['git', '-C', path] + list(args), stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=True)
+
+    git('init', '-q')
+    git('config', 'user.email', 'bench@example.invalid')
+    git('config', 'user.name', 'bench')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'initial payment service')
+    with open(os.path.join(base, 'PaymentService.java'), 'a', encoding='utf-8') as fh:
+        fh.write('// touched by second commit\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'tune payment service pool')
+
+
 # --- прогон ---------------------------------------------------------------------
 
+def bench_env():
+    """Окружение измеряемых скриптов — изолированное, по образцу
+    `tests/helpers.script_env`: фиксированное «сейчас», не наследует переменные
+    скилла, не пишет байткод-кэш в директорию скилла и не зависит от системных
+    часов."""
+    env = os.environ.copy()
+    for key in [k for k in env if k.startswith('INCIDENT_')]:
+        del env[key]
+    env['INCIDENT_NOW'] = BENCH_NOW
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8'
+    return env
+
+
 def run(cmd, stdout=None):
-    """Запуск с подавленным выводом. Возвращает (код, время)."""
+    """Запуск с подавленным выводом и изолированным окружением. Возвращает
+    (код, время, stderr)."""
     started = time.time()
     with open(os.devnull, 'w') as devnull:
         out = devnull if stdout is None else open(stdout, 'w', encoding='utf-8')
         try:
-            proc = subprocess.run(cmd, stdout=out, stderr=subprocess.PIPE)
+            proc = subprocess.run(cmd, stdout=out, stderr=subprocess.PIPE, env=bench_env())
         finally:
             if stdout is not None:
                 out.close()
     return proc.returncode, time.time() - started, proc.stderr.decode('utf-8', 'replace')
 
 
+def ensure(path, cmd):
+    """Считает `cmd`, только если `path` ещё не существует.
+
+    Три замера опираются на результат предыдущего (kb_search и code_hints — на
+    разбор логов, confidence — на оба), и когда замеряется не он сам, а более
+    поздний шаг, промежуточный файл всё равно нужен — молча и один раз.
+    """
+    if not os.path.exists(path):
+        run(cmd, stdout=path)
+
+
 def script(name):
     return os.path.join(SCRIPTS_DIR, name)
 
 
-def measure(work_dir, log_path, kb_dir, lines, only):
+def measure(work_dir, log_path, kb_dir, code_repo, lines, only):
     results = []
 
     def want(key):
@@ -225,14 +292,13 @@ def measure(work_dir, log_path, kb_dir, lines, only):
     kb_json = os.path.join(work_dir, 'kb.json')
     code_json = os.path.join(work_dir, 'code.json')
 
+    parse_logs_cmd = [sys.executable, script('parse_logs.py'), log_path, '--format', 'json']
     if want('parse_logs'):
-        code, elapsed, err = run([sys.executable, script('parse_logs.py'), log_path,
-                                  '--format', 'json'], stdout=parsed_json)
+        code, elapsed, err = run(parse_logs_cmd, stdout=parsed_json)
         results.append(('parse_logs', elapsed, lines / elapsed if elapsed else 0, code, err))
-    elif not os.path.exists(parsed_json):
+    else:
         # последующие замеры опираются на разбор — делаем его молча
-        run([sys.executable, script('parse_logs.py'), log_path, '--format', 'json'],
-            stdout=parsed_json)
+        ensure(parsed_json, parse_logs_cmd)
 
     if want('parse_logs_level'):
         code, elapsed, err = run([sys.executable, script('parse_logs.py'), log_path,
@@ -247,23 +313,21 @@ def measure(work_dir, log_path, kb_dir, lines, only):
         results.append(('parse_logs_window', elapsed, lines / elapsed if elapsed else 0,
                         code, err))
 
+    kb_search_cmd = [sys.executable, script('kb_search.py'), '--from-parsed', parsed_json,
+                     '--kb', kb_dir, '--format', 'json']
     if want('kb_search'):
-        code, elapsed, err = run([sys.executable, script('kb_search.py'),
-                                  '--from-parsed', parsed_json, '--kb', kb_dir,
-                                  '--format', 'json'], stdout=kb_json)
+        code, elapsed, err = run(kb_search_cmd, stdout=kb_json)
         results.append(('kb_search', elapsed, None, code, err))
-    elif not os.path.exists(kb_json):
-        run([sys.executable, script('kb_search.py'), '--from-parsed', parsed_json,
-             '--kb', kb_dir, '--format', 'json'], stdout=kb_json)
+    else:
+        ensure(kb_json, kb_search_cmd)
 
+    code_hints_cmd = [sys.executable, script('code_hints.py'), '--from-parsed', parsed_json,
+                      '--repo', code_repo, '--format', 'json']
     if want('code_hints'):
-        code, elapsed, err = run([sys.executable, script('code_hints.py'),
-                                  '--from-parsed', parsed_json, '--repo', REPO,
-                                  '--format', 'json'], stdout=code_json)
+        code, elapsed, err = run(code_hints_cmd, stdout=code_json)
         results.append(('code_hints', elapsed, None, code, err))
-    elif not os.path.exists(code_json):
-        run([sys.executable, script('code_hints.py'), '--from-parsed', parsed_json,
-             '--repo', REPO, '--format', 'json'], stdout=code_json)
+    else:
+        ensure(code_json, code_hints_cmd)
 
     if want('confidence'):
         code, elapsed, err = run([sys.executable, script('confidence.py'),
@@ -272,13 +336,10 @@ def measure(work_dir, log_path, kb_dir, lines, only):
         results.append(('confidence', elapsed, None, code, err))
 
     if want('triage'):
-        if os.path.exists(script('triage.py')):
-            code, elapsed, err = run([sys.executable, script('triage.py'), log_path,
-                                      '--repo', REPO, '--kb', kb_dir,
-                                      '--out', os.path.join(work_dir, 'triage')])
-            results.append(('triage', elapsed, None, code, err))
-        else:
-            results.append(('triage', None, None, None, 'скрипт ещё не реализован'))
+        code, elapsed, err = run([sys.executable, script('triage.py'), log_path,
+                                  '--repo', code_repo, '--kb', kb_dir,
+                                  '--out', os.path.join(work_dir, 'triage')])
+        results.append(('triage', elapsed, None, code, err))
 
     return results
 
@@ -304,10 +365,17 @@ def main(argv=None):
     ap.add_argument('--keep', help='директория для эталонного входа (не удалять)')
     args = ap.parse_args(argv)
 
+    if args.only:
+        unknown = sorted(set(args.only) - set(BUDGETS))
+        if unknown:
+            ap.error('неизвестный ключ --only: %s. Известные ключи: %s'
+                     % (', '.join(unknown), ', '.join(sorted(BUDGETS))))
+
     work_dir = args.keep or tempfile.mkdtemp(prefix='triage-bench-')
     os.makedirs(work_dir, exist_ok=True)
     log_path = os.path.join(work_dir, 'bench.log')
     kb_dir = os.path.join(work_dir, 'kb')
+    code_repo = os.path.join(work_dir, 'code-repo')
 
     env_note = 'Python %s, %s %s' % (platform.python_version(), platform.system(),
                                      platform.machine())
@@ -319,6 +387,8 @@ def main(argv=None):
                 written = sum(1 for _ in fh)
         if not os.path.exists(os.path.join(kb_dir, 'index.json')):
             generate_kb(kb_dir, args.kb_records)
+        if not os.path.isdir(os.path.join(code_repo, '.git')):
+            generate_code_repo(code_repo)
 
         size_mb = os.path.getsize(log_path) / (1024.0 * 1024.0)
         if not args.json:
@@ -326,7 +396,7 @@ def main(argv=None):
                              % (written, size_mb, args.kb_records))
             sys.stdout.write('Окружение: %s\n\n' % env_note)
 
-        results = measure(work_dir, log_path, kb_dir, written,
+        results = measure(work_dir, log_path, kb_dir, code_repo, written,
                           set(args.only) if args.only else None)
     finally:
         if not args.keep:

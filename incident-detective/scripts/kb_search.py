@@ -8,20 +8,14 @@
 
 import argparse
 import io
-import json
 import os
 import sys
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
-    MAX_SUMMARY_CHARS, kb_dir, load_incidents_fast, run_script,
+    MAX_SUMMARY_CHARS, dump_json, kb_dir, load_incidents_fast, run_script,
     signature_similarity, signatures_from_parsed, load_parsed, tokenize,
 )
 
@@ -107,6 +101,37 @@ def score_incident(inc, query_tokens, signatures, filters):
     return {'score': round(score, 2), 'reasons': reasons, 'inc': inc}
 
 
+def query_from_parsed(parsed):
+    """(сигнатуры, слова запроса) из JSON-вывода parse_logs.py.
+
+    Единственное место, где отфильтрован служебный сервис nginx `access`:
+    раньше фильтр был только в `kb_add.py`, и здесь, и в `triage.py` он
+    предлагался как обычный сервис для поиска.
+    """
+    signatures = list(signatures_from_parsed(parsed))
+    query_parts = []
+    for exc in list(parsed.get('stats', {}).get('exceptions', {}))[:5]:
+        query_parts.append(exc)
+    for svc in list(parsed.get('stats', {}).get('services', {}))[:3]:
+        if str(svc).lower() != 'access':
+            query_parts.append(svc)
+    return signatures, query_parts
+
+
+def rank(incidents, query_tokens, signatures, filters, min_score):
+    """Ранжирует записи базы по совпадению — общая логика kb_search и triage."""
+    hits = []
+    for inc in incidents:
+        result = score_incident(inc, query_tokens, signatures, filters)
+        if result and result['score'] >= min_score:
+            hits.append(result)
+    # id вторым ключом: при равных баллах порядок не должен зависеть от того,
+    # прочитаны записи из индекса или из markdown — иначе один и тот же запрос
+    # даёт разные ответы
+    hits.sort(key=lambda h: (-h['score'], str(h['inc']['meta'].get('id') or '')))
+    return hits
+
+
 def render_md(hits, out, query_desc, total, budget=MAX_SUMMARY_CHARS):
     if not hits:
         out.write('# База знаний: совпадений нет\n\n'
@@ -170,8 +195,7 @@ def render_json(hits, out):
         'meta': h['inc']['meta'],
         'sections': h['inc']['sections'],
     } for h in hits]
-    json.dump(payload, out, ensure_ascii=False, indent=2)
-    out.write('\n')
+    dump_json(payload, out)
 
 
 def render_list(incidents, out):
@@ -220,11 +244,9 @@ def main(argv=None):
     query_parts = list(args.query)
     if args.from_parsed:
         parsed = load_parsed(args.from_parsed)
-        signatures.extend(signatures_from_parsed(parsed))
-        for exc in list(parsed.get('stats', {}).get('exceptions', {}))[:5]:
-            query_parts.append(exc)
-        for svc in list(parsed.get('stats', {}).get('services', {}))[:3]:
-            query_parts.append(svc)
+        extra_sigs, extra_parts = query_from_parsed(parsed)
+        signatures.extend(extra_sigs)
+        query_parts.extend(extra_parts)
 
     if not signatures and not query_parts:
         ap.error('нужен текст запроса, --signature или --from-parsed')
@@ -232,15 +254,7 @@ def main(argv=None):
     query_tokens = tokenize(' '.join(query_parts))
     filters = {'stand': args.stand, 'service': args.service, 'tag': args.tag}
 
-    hits = []
-    for inc in incidents:
-        result = score_incident(inc, query_tokens, signatures, filters)
-        if result and result['score'] >= args.min_score:
-            hits.append(result)
-    # id вторым ключом: при равных баллах порядок не должен зависеть от того,
-    # прочитаны записи из индекса или из markdown — иначе один и тот же запрос
-    # даёт разные ответы
-    hits.sort(key=lambda h: (-h['score'], str(h['inc']['meta'].get('id') or '')))
+    hits = rank(incidents, query_tokens, signatures, filters, args.min_score)
     hits = hits[:args.top]
 
     desc = ' '.join(query_parts[:8]) or '(по сигнатурам)'

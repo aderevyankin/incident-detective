@@ -7,20 +7,14 @@
 """
 
 import argparse
-import json
 import os
 import sys
 from collections import Counter
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
-from kb_common import kb_dir, load_incidents, now, run_script  # noqa: E402
+from kb_common import dump_json, kb_dir, load_incidents, now, run_script  # noqa: E402
 
 
 def rebuild(directory=None):
@@ -38,7 +32,6 @@ def rebuild(directory=None):
             stands[str(stand)] += 1
         for svc in meta.get('services') or []:
             services[str(svc)] += 1
-        symptoms = ' '.join(inc['sections'].get('Симптомы', '').split())
         entries.append({
             # секции целиком: по ним считается релевантность, и поиск должен
             # давать тот же ответ по индексу, что и по markdown-файлам
@@ -53,7 +46,6 @@ def rebuild(directory=None):
             'status': meta.get('status'),
             'signatures': meta.get('signatures') or [],
             'files': meta.get('files') or [],
-            'symptoms': symptoms[:300],
             'file': os.path.basename(inc['path']),
         })
     entries.sort(key=lambda e: str(e.get('date') or ''), reverse=True)
@@ -77,8 +69,7 @@ def rebuild(directory=None):
     }
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, 'index.json')
-    with open(path, 'w', encoding='utf-8') as fh:
-        json.dump(index, fh, ensure_ascii=False, indent=2)
+    dump_json(index, path)
     return path, len(entries)
 
 

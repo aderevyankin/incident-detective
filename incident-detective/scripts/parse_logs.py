@@ -19,24 +19,20 @@ import os
 import re
 import sys
 import zipfile
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
-from kb_common import MAX_SUMMARY_CHARS, TIME_SCALE, now, run_script  # noqa: E402
+from kb_common import (  # noqa: E402
+    DEFAULT_MAX_LINES, EXC_RE, LEVELS, LEVEL_ORD, MAX_SUMMARY_CHARS, TIME_SCALE,
+    dump_json, now, run_script,
+)
+from kb_common import parse_time_arg as _kb_parse_time_arg  # noqa: E402
 
 MAX_LINE = 8192
 LOG_EXTS = ('.log', '.txt', '.json', '.jsonl', '.ndjson', '.out', '.err')
-
-LEVELS = ['TRACE', 'DEBUG', 'INFO', 'NOTICE', 'WARN', 'ERROR', 'FATAL']
-LEVEL_ORD = {name: i for i, name in enumerate(LEVELS)}
 
 LEVEL_ALIASES = {
     'TRACE': 'TRACE', 'TRC': 'TRACE', 'FINEST': 'TRACE', 'VERBOSE': 'TRACE',
@@ -239,32 +235,10 @@ def find_timestamp_tz(text, limit=64):
     return dt, end, tz_known
 
 
-# «1h», «30m», «2d» — окно, отсчитанное назад от текущего момента
-REL_TIME_RE = re.compile(r'^-?(\d+)\s*([smhd])$', re.IGNORECASE)
-REL_UNITS = {'s': 'seconds', 'm': 'minutes', 'h': 'hours', 'd': 'days'}
-
-
-def parse_time_arg(value):
-    text = str(value).strip()
-    rel = REL_TIME_RE.match(text)
-    if rel:
-        # «сейчас» берётся из kb_common.now: с заданным INCIDENT_NOW окно
-        # получается тем же в любой день запуска
-        return now() - timedelta(**{REL_UNITS[rel.group(2).lower()]: int(rel.group(1))})
-    dt, _ = find_timestamp(text, limit=len(text) + 1)
-    if dt:
-        return dt
-    for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%d', '%H:%M'):
-        try:
-            dt = datetime.strptime(text, fmt)
-            if fmt == '%H:%M':
-                today = now()
-                dt = dt.replace(year=today.year, month=today.month, day=today.day)
-            return dt
-        except ValueError:
-            continue
-    raise SystemExit('Не разобрал время: %r (ожидается «2026-07-28 12:00», '
-                     '«12:00» или «1h»)' % value)
+# Реэкспорт: канонический разбор `--since/--until` живёт в kb_common (его
+# нужен find_timestamp — этот модуль), внутренние вызовы parse_logs используют
+# короткое имя, как и раньше.
+parse_time_arg = _kb_parse_time_arg
 
 
 # --------------------------------------------------------------------------
@@ -367,9 +341,6 @@ NGINX_RE = re.compile(
 TRACE_TEXT_RE = re.compile(
     r'(?:trace[_-]?id|request[_-]?id|correlation[_-]?id|rq[_-]?uid|x-request-id)'
     r'\s*[=:]\s*["\']?([\w\-]{6,})', re.IGNORECASE)
-EXC_RE = re.compile(
-    r'\b((?:[a-z][\w]*\.)*[A-Z][A-Za-z0-9_]*'
-    r'(?:Exception|Error|Throwable|Timeout|Failure|Fault|Denied|Refused))\b')
 PY_EXC_RE = re.compile(r'^([A-Z][\w.]*(?:Error|Exception|Warning)):', re.MULTILINE)
 
 
@@ -595,11 +566,6 @@ def classify_line(text):
     return False, hint
 
 
-def is_record_start(text):
-    """Начинается ли новая запись — иначе строка считается продолжением."""
-    return classify_line(text)[0]
-
-
 def parse_record(rec):
     text = rec.raw[0].strip()
     if not text:
@@ -664,7 +630,11 @@ class PreFilter(object):
 
     def skip(self, rec):
         head = rec.raw[0]
-        if self.min_ord is not None:
+        # JSON-строка: уровень достаётся из поля после разбора, а не из первого
+        # слова сырого текста — иначе `{"msg":"debug retry failed","level":"error"}`
+        # теряется при `--level ERROR` из-за слова «debug» в тексте сообщения
+        is_json = head.lstrip()[:1] == '{'
+        if self.min_ord is not None and not is_json:
             m = LEVEL_RE.search(head[:200])
             if m:
                 level = LEVEL_ALIASES.get(m.group(1).upper())
@@ -1189,8 +1159,7 @@ def render_json(result, args, out):
         'histogram': {k.strftime('%Y-%m-%d %H:%M'): v
                       for k, v in sorted(result['err_hist'].items())},
     }
-    json.dump(payload, out, ensure_ascii=False, indent=2)
-    out.write('\n')
+    dump_json(payload, out)
 
 
 def render_context(result, args, out):
@@ -1243,7 +1212,7 @@ def main(argv=None):
     ap.add_argument('--max-chars', type=int, default=MAX_SUMMARY_CHARS,
                     help='предельный объём сводки в символах (%d), 0 — без предела'
                          % MAX_SUMMARY_CHARS)
-    ap.add_argument('--max-lines', type=int, default=2000000)
+    ap.add_argument('--max-lines', type=int, default=DEFAULT_MAX_LINES)
     ap.add_argument('--encoding', default='utf-8')
     args = ap.parse_args(argv)
 

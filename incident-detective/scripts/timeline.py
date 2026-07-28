@@ -24,21 +24,18 @@ import json
 import os
 import re
 import sys
-from collections import defaultdict
 from datetime import datetime, timedelta
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
 import parse_logs as pl  # noqa: E402
 from code_hints import commits_in_window, is_git_repo  # noqa: E402
-from kb_common import (TIME_SCALE, apply_offset, estimate_clock_skew,  # noqa: E402
-                       parse_offset_arg, render_clock_findings, run_script, sort_key)
+from kb_common import (  # noqa: E402
+    DEFAULT_MAX_LINES, MAX_SUMMARY_CHARS, TIME_SCALE, apply_offset, dump_json,
+    dump_overflow, estimate_clock_skew, fit_by_render, parse_offset_arg, parse_time_arg,
+    render_clock_findings, run_script, sort_key,
+)
 
 SPIKE_FACTOR = 3.0
 SPIKE_MIN = 5
@@ -67,18 +64,6 @@ class Args(object):
             setattr(self, key, val)
 
 
-def parse_dt(text):
-    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
-        try:
-            return datetime.strptime(text.strip(), fmt)
-        except ValueError:
-            continue
-    dt, _ = pl.find_timestamp(text, limit=len(text) + 1)
-    if dt:
-        return dt
-    raise SystemExit('Не разобрал время: %r' % text)
-
-
 def parsed_tz_default(parsed):
     """Известна ли зона у разбора в целом.
 
@@ -102,7 +87,7 @@ def events_from_parsed(parsed, label):
             continue
         template = grp.get('template', '')
         events.append({
-            'ts': parse_dt(grp['first']),
+            'ts': parse_time_arg(grp['first']),
             'kind': 'первое появление',
             'level': grp.get('level'),
             'text': template[:140],
@@ -122,7 +107,7 @@ def spikes(hist, label, tz_known=False):
     """Находит резкие всплески в поминутной гистограмме ошибок."""
     if len(hist) < 3:
         return []
-    points = sorted((parse_dt(k), v) for k, v in hist.items())
+    points = sorted((parse_time_arg(k), v) for k, v in hist.items())
     events = []
     baseline = 0.0
     for i, (ts, val) in enumerate(points):
@@ -233,7 +218,27 @@ KIND_MARK = {
 }
 
 
-def render_md(events, out, window, offsets=None, clocks=None):
+def render_event(ev, write):
+    write('**%s** %s %s\n' % (ev['ts'].strftime('%m-%d %H:%M:%S'),
+                              KIND_MARK.get(ev['kind'], '·'), ev['kind']))
+    write('  %s\n' % ev['text'])
+    line = []
+    if ev.get('detail'):
+        line.append(ev['detail'])
+    if ev.get('source'):
+        line.append('источник: %s' % ev['source'])
+    if line:
+        write('  _%s_\n' % ' · '.join(line))
+    write('\n')
+
+
+def overflow_events(events):
+    return [{'ts': pl.fmt_ts(ev['ts']), 'kind': ev['kind'], 'level': ev.get('level'),
+             'text': ev['text'], 'detail': ev.get('detail'), 'source': ev.get('source')}
+            for ev in events]
+
+
+def render_md(events, out, window, offsets=None, clocks=None, budget=0):
     w = out.write
     w('# Хронология инцидента\n\n')
     if not events:
@@ -262,8 +267,13 @@ def render_md(events, out, window, offsets=None, clocks=None):
               '`--offset %s=%.2f`.\n\n'
               % (f['from'], f['to'], f['median'], f['traces'], f['to'], -f['median']))
 
+    # ленте нужен предел объёма так же, как сводке логов: события идут в
+    # хронологическом порядке, и обрезка хвоста не теряет самое важное — то, что
+    # случилось раньше
+    shown, hidden = fit_by_render(events, render_event, budget, reserve=320)
+
     prev = None
-    for ev in events:
+    for ev in shown:
         gap = ''
         if prev is not None:
             delta = ev['ts'] - prev
@@ -281,6 +291,11 @@ def render_md(events, out, window, offsets=None, clocks=None):
         if line:
             w('  _%s_\n' % ' · '.join(line))
         w('\n')
+
+    if hidden:
+        full = dump_overflow(overflow_events(events), 'timeline-events.json')
+        note = (' Полный список: `%s`.' % full) if full else ''
+        w('_Не показано событий: %d — лента ограничена по объёму.%s_\n\n' % (hidden, note))
 
     firsts = [e for e in events if e['kind'] == 'первое появление']
     if firsts:
@@ -310,12 +325,15 @@ def main(argv=None):
     ap.add_argument('--offset', action='append', default=[],
                     help='сдвиг часов источника в секундах: "payment=-2.5"')
     ap.add_argument('--format', choices=['md', 'json'], default='md')
+    ap.add_argument('--max-chars', type=int, default=MAX_SUMMARY_CHARS,
+                    help='предельный объём ленты в символах (%d), 0 — без предела'
+                         % MAX_SUMMARY_CHARS)
     ap.add_argument('--encoding', default='utf-8')
-    ap.add_argument('--max-lines', type=int, default=2000000)
+    ap.add_argument('--max-lines', type=int, default=DEFAULT_MAX_LINES)
     args = ap.parse_args(argv)
 
-    args.since = parse_dt(args.since) if args.since else None
-    args.until = parse_dt(args.until) if args.until else None
+    args.since = parse_time_arg(args.since) if args.since else None
+    args.until = parse_time_arg(args.until) if args.until else None
     args.offsets = dict(parse_offset_arg(item) for item in args.offset)
 
     events = []
@@ -350,7 +368,7 @@ def main(argv=None):
             if not m:
                 raise SystemExit('Веха задаётся как "ВРЕМЯ|описание": %r' % raw)
             when, text = m.group(1), m.group(2)
-        events.append({'ts': parse_dt(when), 'kind': 'веха', 'level': None,
+        events.append({'ts': parse_time_arg(when), 'kind': 'веха', 'level': None,
                        'text': text.strip(), 'detail': '', 'source': 'указано вручную',
                        'tz_known': True, 'match': None})
 
@@ -363,10 +381,9 @@ def main(argv=None):
     if args.check_clocks:
         findings, points = clocks
         if args.format == 'json':
-            json.dump({'points': points, 'clock_findings': findings,
-                       'time_scale': TIME_SCALE, 'mixed_timezones': mixed_zones(events)},
-                      sys.stdout, ensure_ascii=False, indent=2)
-            sys.stdout.write('\n')
+            dump_json({'points': points, 'clock_findings': findings,
+                      'time_scale': TIME_SCALE, 'mixed_timezones': mixed_zones(events)},
+                     sys.stdout)
         else:
             sys.stdout.write('# Проверка часов между источниками\n\n')
             if mixed_zones(events):
@@ -401,13 +418,13 @@ def main(argv=None):
     if args.format == 'json':
         # вывод остаётся списком событий — его читают как список; шкала едет
         # полем события, а не новой обёрткой, которая сломала бы читателей
-        json.dump([{k: v for k, v in ev.items() if k != 'match'}
+        dump_json([{k: v for k, v in ev.items() if k != 'match'}
                    for ev in ({**e, 'ts': e['ts'].strftime('%Y-%m-%d %H:%M:%S'),
                                'time_scale': TIME_SCALE} for e in events)],
-                  sys.stdout, ensure_ascii=False, indent=2)
-        sys.stdout.write('\n')
+                  sys.stdout)
     else:
-        render_md(events, sys.stdout, (win_start, win_end), args.offsets, clocks)
+        render_md(events, sys.stdout, (win_start, win_end), args.offsets, clocks,
+                  budget=args.max_chars)
     return 0
 
 

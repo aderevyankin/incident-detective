@@ -1,0 +1,3 @@
+{"timestamp": "2026-07-28 14:00:01", "level": "info", "service": "orders-api", "message": "order created"}
+{"timestamp": "2026-07-28 14:00:05", "level": "error", "service": "orders-api", "message": "debug retry failed after 3 attempts"}
+{"timestamp": "2026-07-28 14:00:09", "level": "debug", "service": "orders-api", "message": "cache warmed"}

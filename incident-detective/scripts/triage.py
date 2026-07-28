@@ -26,21 +26,16 @@ import os
 import json
 import sys
 
-# Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
-if sys.version_info < (3, 8):
-    sys.stderr.write('incident-detective: нужен Python 3.8 или новее, запущен %s (%s)\n'
-                     % (sys.version.split()[0], sys.executable))
-    sys.exit(2)
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kb_common import require_python; require_python()  # noqa: E402
 
 import code_hints  # noqa: E402
 import confidence  # noqa: E402
 import kb_search  # noqa: E402
 import parse_logs as pl  # noqa: E402
 from kb_common import (  # noqa: E402
-    MAX_SUMMARY_CHARS, kb_dir, load_incidents_fast, run_script,
-    signatures_from_parsed, tokenize,
+    DEFAULT_MAX_LINES, LEVELS, MAX_SUMMARY_CHARS, dump_json, kb_dir, load_incidents_fast,
+    run_script, tokenize,
 )
 
 
@@ -104,12 +99,9 @@ def stage_kb(args, parsed, out_dir):
     if not incidents:
         return stage.skip('база знаний пуста или не найдена: %s' % directory)
 
-    signatures = list(signatures_from_parsed(parsed))
-    query_parts = []
-    for exc in list(parsed.get('stats', {}).get('exceptions', {}))[:5]:
-        query_parts.append(exc)
-    for svc in list(parsed.get('stats', {}).get('services', {}))[:3]:
-        query_parts.append(svc)
+    # запрос и ранжирование — общие с kb_search.py: логику не дублируем, а
+    # вызываем те же функции, включая фильтр служебного сервиса `access`
+    signatures, query_parts = kb_search.query_from_parsed(parsed)
     if args.query:
         query_parts.extend(args.query)
     if not signatures and not query_parts:
@@ -119,12 +111,7 @@ def stage_kb(args, parsed, out_dir):
                'service': [args.service] if args.service else None,
                'tag': None}
     tokens = tokenize(' '.join(query_parts))
-    hits = []
-    for inc in incidents:
-        scored = kb_search.score_incident(inc, tokens, signatures, filters)
-        if scored and scored['score'] >= args.min_score:
-            hits.append(scored)
-    hits.sort(key=lambda h: (-h['score'], str(h['inc']['meta'].get('id') or '')))
+    hits = kb_search.rank(incidents, tokens, signatures, filters, args.min_score)
     hits = hits[:args.top_kb]
 
     buf = io.StringIO()
@@ -161,11 +148,14 @@ def stage_confidence(args, stages, out_dir):
     if logs is None and kb_payload is None and code is None:
         return stage.skip('нечего оценивать: ни один контур не дал данных')
 
+    # 'trace' здесь не считается: оркестратор не строит цепочку запроса — этот
+    # контур confidence.combine учитывает как непройденный, ровно как и при
+    # вызове score_trace(None), но без бессмысленного вызова с заведомо пустым
+    # входом
     scores = {
         'logs': confidence.score_logs(logs),
         'kb': confidence.score_kb(kb_payload, args.stand, args.service),
         'code': confidence.score_code(code),
-        'trace': confidence.score_trace(None),
     }
     total, rows = confidence.combine(scores)
     payload = {'confidence': round(total, 3), 'verdict': confidence.verdict(total),
@@ -180,8 +170,7 @@ def stage_confidence(args, stages, out_dir):
 def write_json(out_dir, name, payload):
     path = os.path.join(out_dir, name)
     try:
-        with open(path, 'w', encoding='utf-8') as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+        dump_json(payload, path)
     except OSError as exc:
         sys.stderr.write('warning: не сохранил %s: %s\n' % (path, exc))
         return None
@@ -254,16 +243,25 @@ def indent_section(text):
 
 def fit_output(text, budget):
     """Общая сводка тоже едет в контекст: если она вылезла за бюджет, режем
-    хвост по разделам, а не по символам, и говорим, что урезали."""
+    хвост по разделам, а не по символам, и говорим, что урезали.
+
+    Первый раздел целиком не гарантируется: он проходит через ту же укладку,
+    что и остальные — раздел логов при большом `--top` мог сам по себе быть
+    больше `--max-chars`, и раньше это был единственный способ превысить
+    заданный предел.
+    """
     if budget <= 0 or len(text) <= budget:
         return text
     parts = text.split('\n## ')
     kept = [parts[0]]
     used = len(parts[0])
     dropped = []
+    # резерв под строку «не показаны разделы», которая добавляется в конце —
+    # без него сама эта строка могла бы вытолкнуть итог за бюджет
+    reserve = 200
     for part in parts[1:]:
         chunk = '\n## ' + part
-        if used + len(chunk) > budget and len(kept) > 1:
+        if used + len(chunk) > budget - reserve:
             dropped.append(part.split('\n', 1)[0].strip())
             continue
         kept.append(part)
@@ -272,6 +270,10 @@ def fit_output(text, budget):
     if dropped:
         result += ('\n_Не показаны разделы: %s — сводка ограничена по объёму. '
                    'Они есть в машинных результатах._\n' % ', '.join(dropped))
+    if len(result) > budget:
+        # запасной случай: даже преамбула с перечнем скрытых разделов не
+        # уложилась — режем по символам, это надёжнее превышения предела
+        result = result[:budget - 1].rstrip() + '…'
     return result
 
 
@@ -290,7 +292,7 @@ def main(argv=None):
     ap.add_argument('--query', action='append',
                     help='слова симптома для поиска по базе (можно повторять)')
     ap.add_argument('--claim', help='формулировка вывода, которую оцениваем')
-    ap.add_argument('--level', choices=pl.LEVELS, help='минимальный уровень')
+    ap.add_argument('--level', choices=LEVELS, help='минимальный уровень')
     ap.add_argument('--since', help='начало окна, напр. "2026-07-28 12:00"')
     ap.add_argument('--until', help='конец окна')
     ap.add_argument('--grep', help='regex-фильтр по сырому тексту записи')
@@ -301,7 +303,7 @@ def main(argv=None):
     ap.add_argument('--max-chars', type=int, default=MAX_SUMMARY_CHARS,
                     help='предельный объём сводки в символах (%d), 0 — без предела'
                          % MAX_SUMMARY_CHARS)
-    ap.add_argument('--max-lines', type=int, default=2000000)
+    ap.add_argument('--max-lines', type=int, default=DEFAULT_MAX_LINES)
     ap.add_argument('--encoding', default='utf-8')
     args = ap.parse_args(argv)
 
