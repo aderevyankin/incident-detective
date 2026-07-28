@@ -19,6 +19,24 @@ PROJECT_KB_RELPATH = os.path.join('memory', 'knowledgebase')
 
 SECTIONS = ['Симптомы', 'Диагностика', 'Причина', 'Решение', 'Проверка', 'Заметки']
 
+# Отдельно от SECTIONS: это единственный необязательный раздел тела записи — его
+# не заполняют плейсхолдером «не заполнено», отсутствие признаков не создаёт
+# пустого раздела ни в записи, ни в выдаче поиска.
+DISTINGUISHERS_SECTION = 'Отличительные признаки'
+
+# Значения поля исхода. Отсутствие поля читается как OUTCOME_UNVERIFIED — это и
+# есть правда о записях, созданных до появления этого поля.
+OUTCOME_CONFIRMED = 'confirmed'
+OUTCOME_REFUTED = 'refuted'
+OUTCOME_UNVERIFIED = 'unverified'
+OUTCOMES = (OUTCOME_CONFIRMED, OUTCOME_REFUTED, OUTCOME_UNVERIFIED)
+
+
+def outcome_of(meta):
+    """Исход записи: явно заданный или «не проверена» по умолчанию."""
+    val = str((meta or {}).get('outcome') or '').strip().lower()
+    return val if val in OUTCOMES else OUTCOME_UNVERIFIED
+
 # Вывод скриптов едет в контекст агента и остаётся там до конца разбора: чем он
 # больше, тем медленнее каждый следующий шаг. Предел общий для всех скриптов,
 # на машинный вывод (`--format json`) не распространяется — тот пишется в файл.
@@ -673,7 +691,8 @@ def parse_frontmatter(text):
 def dump_frontmatter(meta):
     lines = ['---']
     order = ['id', 'title', 'date', 'stands', 'services', 'tags', 'severity',
-             'status', 'files', 'commits', 'related', 'signatures']
+             'status', 'outcome', 'outcome_date', 'reuse_count', 'reused_at',
+             'files', 'commits', 'related', 'signatures']
     keys = [k for k in order if k in meta] + [k for k in meta if k not in order]
     for key in keys:
         val = meta[key]

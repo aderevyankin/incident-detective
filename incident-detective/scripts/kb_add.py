@@ -10,10 +10,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
-    DEFAULT_KB, ENV_KB, KB_DEFAULT, KB_PROJECT, SECTIONS, dump_frontmatter, kb_is_empty,
-    load_incidents, load_parsed, merge_scrub_counts, next_id, norm_signature, now,
-    project_kb_dir, render_scrub_summary, resolve_kb, run_script, scrub_text,
-    signatures_from_parsed, slugify,
+    DEFAULT_KB, DISTINGUISHERS_SECTION, ENV_KB, KB_DEFAULT, KB_PROJECT, OUTCOME_UNVERIFIED,
+    OUTCOMES, SECTIONS, dump_frontmatter, kb_is_empty, load_incidents, load_parsed,
+    merge_scrub_counts, next_id, norm_signature, now, project_kb_dir, render_scrub_summary,
+    resolve_kb, run_script, scrub_text, signatures_from_parsed, slugify,
 )
 
 # Код возврата «расположение базы не выбрано»: отличается и от ошибки аргументов
@@ -63,6 +63,13 @@ def merge_signatures(existing, new):
 def build_body(sections):
     parts = []
     for name in SECTIONS:
+        # раздел с отличительными признаками — единственный необязательный:
+        # плейсхолдером не заполняется, отсутствие признаков не создаёт
+        # пустого раздела
+        if name == 'Заметки':
+            diff = sections.get(DISTINGUISHERS_SECTION, '').strip()
+            if diff:
+                parts.append('## %s\n\n%s\n' % (DISTINGUISHERS_SECTION, diff))
         text = sections.get(name, '').strip()
         parts.append('## %s\n\n%s\n' % (name, text if text else '_не заполнено_'))
     return '\n'.join(parts)
@@ -80,10 +87,16 @@ def main(argv=None):
     ap.add_argument('--root-cause', help='причина')
     ap.add_argument('--fix', help='что сделали')
     ap.add_argument('--verify', help='как проверить, что починилось')
+    ap.add_argument('--distinguishing',
+                    help='отличительный признак: проверяемое наблюдение, по которому '
+                         'видно, что текущий случай не этот, несмотря на совпадение сигнатуры')
     ap.add_argument('--notes', help='ссылки, тикеты, грабли')
     ap.add_argument('--severity', choices=['low', 'medium', 'high', 'critical'])
     ap.add_argument('--status', choices=['resolved', 'workaround', 'open', 'wontfix'],
                     default='resolved')
+    ap.add_argument('--outcome', choices=OUTCOMES,
+                    help='исход разбора: confirmed/refuted/unverified '
+                         '(по умолчанию для новой записи — unverified)')
     ap.add_argument('--signature', action='append', default=[], help='сигнатура вручную')
     ap.add_argument('--from-parsed', help='JSON parse_logs.py — подтянуть сигнатуры')
     ap.add_argument('--file', action='append', default=[], help='файл кода, связанный с багом')
@@ -153,9 +166,14 @@ def main(argv=None):
             'services': services,
             'tags': split_csv(args.tags),
             'status': args.status,
+            # фикс ещё не подтверждён практикой — по умолчанию исход «не проверена»,
+            # даже если запись создаётся сразу после разбора
+            'outcome': args.outcome or OUTCOME_UNVERIFIED,
         }
         if args.severity:
             meta['severity'] = args.severity
+        if args.outcome:
+            meta['outcome_date'] = date
         sections = {}
         existing_body = ''
     else:
@@ -171,7 +189,14 @@ def main(argv=None):
             meta['severity'] = args.severity
         if args.status:
             meta['status'] = args.status
+        if args.outcome:
+            meta['outcome'] = args.outcome
+            meta['outcome_date'] = date
         meta.setdefault('date', date)
+        # `--update` фиксирует зафиксированный повтор инцидента — это наблюдаемое
+        # событие, а не самооценка полезности записи
+        meta['reuse_count'] = int(meta.get('reuse_count') or 0) + 1
+        meta['reused_at'] = date
 
     meta['signatures'] = merge_signatures(meta.get('signatures'), signatures)
     if args.file:
@@ -187,6 +212,7 @@ def main(argv=None):
         ('Причина', args.root_cause),
         ('Решение', args.fix),
         ('Проверка', args.verify),
+        (DISTINGUISHERS_SECTION, args.distinguishing),
         ('Заметки', args.notes),
     ]
     for name, value in updates:
