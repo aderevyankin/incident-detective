@@ -39,7 +39,8 @@ import confidence  # noqa: E402
 import kb_search  # noqa: E402
 import parse_logs as pl  # noqa: E402
 from kb_common import (  # noqa: E402
-    MAX_SUMMARY_CHARS, kb_dir, load_incidents_fast, signatures_from_parsed, tokenize,
+    MAX_SUMMARY_CHARS, kb_dir, load_incidents_fast, run_script,
+    signatures_from_parsed, tokenize,
 )
 
 
@@ -335,9 +336,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    try:
-        sys.exit(main())
-    except BrokenPipeError:
-        pass
-    except KeyboardInterrupt:
-        sys.exit(130)
+    sys.exit(run_script(main, __file__))

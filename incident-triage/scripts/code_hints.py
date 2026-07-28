@@ -31,7 +31,7 @@ if sys.version_info < (3, 8):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kb_common import MAX_SUMMARY_CHARS, load_parsed  # noqa: E402
+from kb_common import MAX_SUMMARY_CHARS, load_parsed, run_script  # noqa: E402
 
 SKIP_DIRS = {'.git', 'node_modules', 'venv', '.venv', 'env', '__pycache__',
              'dist', 'build', 'target', '.idea', '.gradle', 'vendor',
@@ -584,4 +584,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(run_script(main, __file__))

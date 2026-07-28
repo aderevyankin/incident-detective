@@ -1,0 +1,5 @@
+time=2026-07-28T16:20:01 level=info service=gateway msg="request accepted" trace_id=req-7f3a9c path=/api/pay
+time=2026-07-28T16:20:01 level=info service=gateway msg="routing to payment" trace_id=req-7f3a9c
+time=2026-07-28T16:20:06 level=error service=gateway msg="upstream timeout, returning 504" trace_id=req-7f3a9c
+time=2026-07-28T16:21:11 level=info service=gateway msg="request accepted" trace_id=req-11b2de path=/api/pay
+time=2026-07-28T16:21:12 level=info service=gateway msg="request completed" trace_id=req-11b2de

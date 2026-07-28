@@ -1,0 +1,18 @@
+{
+  "fixture": "stacktrace.log",
+  "why": "Java-стектрейс на восемь строк внутри одной записи. Проверяется склейка многострочных записей: строки `at ...`, `Caused by:` и `... 12 more` не должны стать самостоятельными записями, а классы исключений — потеряться.",
+  "expect": {
+    "records": 3,
+    "levels": {"INFO": 2, "ERROR": 1},
+    "exceptions": {"java.lang.IllegalStateException": 1, "java.io.IOException": 1},
+    "first_ts": "2026-07-28 15:10:02",
+    "last_ts": "2026-07-28 15:10:09",
+    "error_groups": 1,
+    "top_group": {
+      "level": "ERROR",
+      "count": 1,
+      "template_contains": "java.lang.IllegalStateException: connection pool is closed"
+    },
+    "signatures_contain": ["java.lang.IllegalStateException", "java.io.IOException"]
+  }
+}

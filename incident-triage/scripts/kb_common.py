@@ -20,6 +20,117 @@ MAX_SUMMARY_CHARS = 12000
 
 LIST_FIELDS = ('stands', 'services', 'tags', 'signatures', 'related', 'files', 'commits')
 
+# --------------------------------------------------------------------------
+# Текущее время и телеметрия вызовов
+# --------------------------------------------------------------------------
+
+# «Сейчас» задаётся снаружи: разбор, зависящий от дня запуска, невоспроизводим.
+ENV_NOW = 'INCIDENT_NOW'
+# Файл, куда скрипты дописывают факт своего запуска. Не задан — не пишут ничего.
+ENV_TRACE = 'INCIDENT_TRACE_FILE'
+
+NOW_FORMATS = ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S',
+               '%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M', '%Y-%m-%d')
+
+_NOW = []
+
+
+def _parse_now(raw):
+    text = str(raw).strip().strip('"\'')
+    if text.endswith('Z'):
+        text = text[:-1]
+    for fmt in NOW_FORMATS:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def now():
+    """«Сейчас» для всех скриптов: из INCIDENT_NOW, иначе системные часы.
+
+    Значение фиксируется на весь запуск: разбор, идущий через полночь, не должен
+    получать разные ответы в начале и в конце. Неразобранное значение — ошибка, а
+    не тихий откат на системное время: откат вернул бы невоспроизводимость,
+    замаскировав её.
+    """
+    if _NOW:
+        return _NOW[0]
+    raw = os.environ.get(ENV_NOW)
+    if raw is None or not str(raw).strip():
+        value = datetime.now()
+    else:
+        value = _parse_now(raw)
+        if value is None:
+            raise SystemExit(
+                'Не разобрал %s=%r — ожидается «2026-07-28 12:00:00». '
+                'Системное время подставлять не буду: разбор стал бы '
+                'невоспроизводимым молча.' % (ENV_NOW, raw))
+    _NOW.append(value)
+    return value
+
+
+def _flag_names(argv):
+    """Только имена флагов: значения аргументов в телеметрию не попадают."""
+    names = []
+    for item in argv:
+        text = str(item)
+        if not text.startswith('-'):
+            continue
+        name = text.split('=', 1)[0]
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def record_run(script, argv, code):
+    """Дописывает строку о запуске скрипта, если задан INCIDENT_TRACE_FILE.
+
+    Отвечает на вопрос, который прогоном фикстур не проверяется и по тексту
+    ответа не виден: какие контуры разбора реально прогнали. Значения аргументов
+    не пишутся — на вход скриптам идут фрагменты логов и слова пользователя, и
+    файл отладки не должен стать ещё одним местом, где они оседают.
+    """
+    path = os.environ.get(ENV_TRACE)
+    if not path:
+        return
+    try:
+        stamp = (_NOW[0] if _NOW else datetime.now()).strftime('%Y-%m-%d %H:%M:%S')
+        line = '%s\t%s\t%s\trc=%s\n' % (stamp, script,
+                                        ' '.join(_flag_names(argv)) or '-', code)
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write(line)
+    except Exception:                                       # noqa: BLE001
+        # отладка не имеет права ломать разбор: недоступный файл — не повод
+        # прерывать работу и не повод писать что-то в стандартный вывод
+        pass
+
+
+def run_script(main, path, argv=None):
+    """Точка входа скрипта: единая обработка выходов плюс телеметрия.
+
+    Возвращает код возврата — вызывающий передаёт его в sys.exit.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    code = 0
+    try:
+        now()          # неразобранное INCIDENT_NOW — ошибка до начала работы
+        code = main() or 0
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            code = 0
+        elif not isinstance(code, int):
+            sys.stderr.write('%s\n' % code)
+            code = 1
+    except BrokenPipeError:
+        code = 0
+    except KeyboardInterrupt:
+        code = 130
+    record_run(os.path.basename(path), argv, code)
+    return code
+
 
 def kb_dir(explicit=None):
     return os.path.abspath(explicit or os.environ.get('INCIDENT_KB_DIR') or DEFAULT_KB)
@@ -242,7 +353,7 @@ def load_incidents_fast(directory=None):
 
 
 def next_id(incidents, when=None):
-    when = when or datetime.now()
+    when = when or now()
     prefix = 'INC-%04d-%02d' % (when.year, when.month)
     used = []
     for inc in incidents:

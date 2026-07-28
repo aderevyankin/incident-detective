@@ -1,0 +1,15 @@
+{
+  "fixture": "mixed_formats.log",
+  "why": "Четыре формата в одном файле: JSON, logfmt, access-лог nginx и произвольный текст. Определение формата идёт построчно, и проверяется именно это — что все восемь записей разобраны своим разбором, а не свалены в plain.",
+  "expect": {
+    "records": 8,
+    "formats": {"json": 2, "logfmt": 2, "access": 2, "plain": 2},
+    "levels": {"INFO": 3, "WARN": 1, "ERROR": 4},
+    "statuses": {"200": 1, "502": 1},
+    "exceptions": {"PaymentDeclinedError": 3},
+    "first_ts": "2026-07-28 14:00:01",
+    "last_ts": "2026-07-28 14:00:33",
+    "signature_kinds": ["exception", "http", "template"],
+    "signatures_contain": ["PaymentDeclinedError", "http_status=502"]
+  }
+}

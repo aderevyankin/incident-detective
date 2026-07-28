@@ -32,6 +32,7 @@ if sys.version_info < (3, 8):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import parse_logs as pl  # noqa: E402
+from kb_common import run_script  # noqa: E402
 
 WEIGHTS = [
     ('logs', 'Логи', 0.30),
@@ -357,4 +358,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(run_script(main, __file__))

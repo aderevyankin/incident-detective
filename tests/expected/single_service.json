@@ -1,0 +1,30 @@
+{
+  "fixture": "single_service.log",
+  "why": "Лог одного сервиса с однозначной причиной: пул соединений исчерпывается, следом идут таймауты. Разбор обязан свести 15 строк в один шаблон, назвать время первого появления и извлечь класс исключения — на этих трёх вещах держатся остальные контуры. Переменные части нарочно двух видов: числовой номер заказа и буквенно-цифровой `w3`. Шаблонизатор обязан скрыть оба: маска, которая перестанет ловить `w3`, разведёт один инцидент на несколько шаблонов и испортит сигнатуры.",
+  "expect": {
+    "records": 23,
+    "levels": {"INFO": 5, "WARN": 3, "ERROR": 15},
+    "formats": {"plain": 23},
+    "services": {"payment-api": 23},
+    "exceptions": {"ConnectionTimeoutError": 15},
+    "first_ts": "2026-07-28 12:28:03",
+    "last_ts": "2026-07-28 12:34:57",
+    "histogram_buckets": 4,
+    "error_groups": 1,
+    "top_group": {
+      "level": "ERROR",
+      "count": 15,
+      "first": "2026-07-28 12:34:01",
+      "template_contains": "ConnectionTimeoutError: timed out waiting for connection from pool after <n> ms (order <n>, worker <n>)"
+    },
+    "groups_contain": [
+      {"level": "WARN", "count": 3, "template": "connection pool exhausted, waiting for free connection"}
+    ],
+    "signature_kinds": ["exception", "template"],
+    "signatures_contain": [
+      "ConnectionTimeoutError",
+      "tmpl:connection pool exhausted, waiting for free connection"
+    ],
+    "signatures_absent": ["order 100344"]
+  }
+}

@@ -21,8 +21,8 @@ if sys.version_info < (3, 8):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kb_common import (  # noqa: E402
-    MAX_SUMMARY_CHARS, kb_dir, load_incidents_fast, signature_similarity,
-    signatures_from_parsed, load_parsed, tokenize,
+    MAX_SUMMARY_CHARS, kb_dir, load_incidents_fast, run_script,
+    signature_similarity, signatures_from_parsed, load_parsed, tokenize,
 )
 
 FIELD_WEIGHTS = [
@@ -255,4 +255,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(run_script(main, __file__))

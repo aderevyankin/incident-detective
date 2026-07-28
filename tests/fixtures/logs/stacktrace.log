@@ -1,0 +1,10 @@
+2026-07-28 15:10:02 INFO  [orders-api] processing batch 77
+2026-07-28 15:10:04 ERROR [orders-api] Unhandled exception while charging order 5100
+java.lang.IllegalStateException: connection pool is closed
+	at com.acme.orders.PaymentClient.charge(PaymentClient.java:142)
+	at com.acme.orders.OrderService.process(OrderService.java:88)
+	at com.acme.orders.BatchRunner.run(BatchRunner.java:31)
+Caused by: java.io.IOException: socket closed
+	at java.base/java.net.SocketInputStream.read(SocketInputStream.java:186)
+	... 12 more
+2026-07-28 15:10:09 INFO  [orders-api] batch 77 aborted

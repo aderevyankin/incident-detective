@@ -1,0 +1,19 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    # 22.04, потому что на ней доступен Python 3.8 — минимальная версия, которую
+    # обещает скилл. Прогон на более новом интерпретаторе не заметил бы, что в
+    # скрипт заехала возможность языка, которой на стенде нет.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+      - name: Прогон проверок
+        run: python3 tests/run.py

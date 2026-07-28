@@ -32,6 +32,7 @@ if sys.version_info < (3, 8):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import parse_logs as pl  # noqa: E402
+from kb_common import run_script  # noqa: E402
 
 # ниже этого не считаем расхождение часов подозрительным: сетевые задержки
 # и разное время записи в лог дают до секунды сами по себе
@@ -499,9 +500,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    try:
-        sys.exit(main())
-    except BrokenPipeError:
-        pass
-    except KeyboardInterrupt:
-        sys.exit(130)
+    sys.exit(run_script(main, __file__))

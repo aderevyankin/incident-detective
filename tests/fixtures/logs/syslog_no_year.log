@@ -1,0 +1,3 @@
+Jul 28 12:33:44 stage-node-1 payment-api[4211]: ERROR ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms
+Jul 28 12:33:51 stage-node-1 payment-api[4211]: ERROR ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms
+Jul 28 12:34:02 stage-node-1 payment-api[4211]: INFO pool recovered, free connections 4

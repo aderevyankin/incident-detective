@@ -6,7 +6,6 @@ import argparse
 import os
 import re
 import sys
-from datetime import datetime
 
 # Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
 if sys.version_info < (3, 8):
@@ -18,7 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kb_common import (  # noqa: E402
     SECTIONS, dump_frontmatter, kb_dir, load_incidents, load_parsed, next_id,
-    norm_signature, parse_frontmatter, signatures_from_parsed, slugify,
+    norm_signature, now, parse_frontmatter, run_script, signatures_from_parsed,
+    slugify,
 )
 
 SECRET_RE = re.compile(
@@ -117,12 +117,12 @@ def main(argv=None):
     if target is None and not args.title:
         raise SystemExit('Для новой записи нужен --title')
 
-    now = datetime.now()
-    date = args.date or now.strftime('%Y-%m-%d')
+    when = now()
+    date = args.date or when.strftime('%Y-%m-%d')
 
     if target is None:
         meta = {
-            'id': next_id(incidents, now),
+            'id': next_id(incidents, when),
             'title': args.title,
             'date': date,
             'stands': split_csv(args.stand),
@@ -215,4 +215,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(run_script(main, __file__))

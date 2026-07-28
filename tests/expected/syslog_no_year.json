@@ -1,0 +1,12 @@
+{
+  "fixture": "syslog_no_year.log",
+  "why": "Syslog-записи без года. Год подставляется из «сейчас», а «сейчас» задано переменной INCIDENT_NOW (2026-07-28) — поэтому ожидаемое время фиксировано и не зависит от дня прогона. Отдельно это проверяется в test_time_env: с другим значением переменной год другой.",
+  "expect": {
+    "records": 3,
+    "levels": {"ERROR": 2, "INFO": 1},
+    "first_ts": "2026-07-28 12:33:44",
+    "last_ts": "2026-07-28 12:34:02",
+    "exceptions": {"ConnectionTimeoutError": 2},
+    "signatures_contain": ["ConnectionTimeoutError"]
+  }
+}

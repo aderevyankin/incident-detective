@@ -11,7 +11,6 @@ import json
 import os
 import sys
 from collections import Counter
-from datetime import datetime
 
 # Без f-строк намеренно: на старом интерпретаторе должно печататься сообщение, а не SyntaxError.
 if sys.version_info < (3, 8):
@@ -21,7 +20,7 @@ if sys.version_info < (3, 8):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kb_common import kb_dir, load_incidents  # noqa: E402
+from kb_common import kb_dir, load_incidents, now, run_script  # noqa: E402
 
 
 def rebuild(directory=None):
@@ -68,7 +67,7 @@ def rebuild(directory=None):
         except OSError:
             pass
     index = {
-        'generated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'generated': now().strftime('%Y-%m-%d %H:%M:%S'),
         'source_mtime': newest,
         'count': len(entries),
         'tags': dict(tags.most_common()),
@@ -93,4 +92,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(run_script(main, __file__))

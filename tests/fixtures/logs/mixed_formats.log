@@ -1,0 +1,8 @@
+{"timestamp": "2026-07-28 14:00:01", "level": "info", "service": "orders-api", "message": "order created", "order_id": 5001}
+{"timestamp": "2026-07-28 14:00:09", "level": "error", "service": "orders-api", "message": "PaymentDeclinedError: card declined", "order_id": 5002}
+time=2026-07-28T14:00:12 level=warn service=orders-api msg="retrying payment callback" attempt=2
+time=2026-07-28T14:00:15 level=error service=orders-api msg="PaymentDeclinedError: card declined" order_id=5003
+203.0.113.7 - - [28/Jul/2026:14:00:20 +0300] "GET /api/orders/5001 HTTP/1.1" 200 812
+203.0.113.9 - - [28/Jul/2026:14:00:24 +0300] "POST /api/payments HTTP/1.1" 502 173
+2026-07-28 14:00:30 INFO  [orders-api] nightly reconciliation skipped, not scheduled
+2026-07-28 14:00:33 ERROR [orders-api] PaymentDeclinedError: card declined

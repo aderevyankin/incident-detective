@@ -1,0 +1,5 @@
+startup sequence begin
+loading modules
+module cache ready
+listening on socket
+shutdown requested

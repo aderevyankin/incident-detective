@@ -1,0 +1,19 @@
+2026-07-28 09:00:01 INFO  [orders-api] service started, version 2.7.1
+2026-07-28 09:00:02 INFO  [orders-api] config loaded from /etc/orders/app.yaml
+2026-07-28 09:01:12 INFO  [orders-api] order created, order 74001, amount 320
+2026-07-28 09:02:44 INFO  [orders-api] order created, order 74002, amount 1180
+2026-07-28 09:03:05 WARN  [orders-api] client error 404 for GET /api/orders/74999
+2026-07-28 09:03:51 INFO  [orders-api] order created, order 74003, amount 90
+2026-07-28 09:04:19 INFO  [orders-api] order shipped, order 74001
+2026-07-28 09:05:23 WARN  [orders-api] callback attempt 1 failed, will retry in 2 s
+2026-07-28 09:05:26 INFO  [orders-api] callback attempt 2 succeeded
+2026-07-28 09:06:40 INFO  [orders-api] order created, order 74004, amount 4400
+2026-07-28 09:07:02 INFO  [orders-api] cache refreshed, 1820 entries
+2026-07-28 09:08:33 WARN  [orders-api] client error 400 for POST /api/orders, field amount missing
+2026-07-28 09:09:10 INFO  [orders-api] order created, order 74005, amount 260
+2026-07-28 09:10:00 INFO  [orders-api] health check ok, uptime 600 s
+2026-07-28 09:11:47 INFO  [orders-api] order shipped, order 74002
+2026-07-28 09:12:31 INFO  [orders-api] nightly reconciliation skipped, not scheduled
+2026-07-28 09:13:09 INFO  [orders-api] order created, order 74006, amount 770
+2026-07-28 09:14:55 INFO  [orders-api] cache refreshed, 1824 entries
+2026-07-28 09:15:00 INFO  [orders-api] health check ok, uptime 900 s

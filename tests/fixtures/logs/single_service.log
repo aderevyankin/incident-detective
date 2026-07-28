@@ -1,0 +1,23 @@
+2026-07-28 12:28:03 INFO  [payment-api] service started, version 1.24.0
+2026-07-28 12:28:04 INFO  [payment-api] connection pool initialized, size 20
+2026-07-28 12:29:10 INFO  [payment-api] payment accepted, order 100341, amount 1500
+2026-07-28 12:29:41 INFO  [payment-api] payment accepted, order 100342, amount 890
+2026-07-28 12:30:22 INFO  [payment-api] payment accepted, order 100343, amount 12400
+2026-07-28 12:31:14 WARN  [payment-api] connection pool exhausted, waiting for free connection
+2026-07-28 12:32:07 WARN  [payment-api] connection pool exhausted, waiting for free connection
+2026-07-28 12:33:41 WARN  [payment-api] connection pool exhausted, waiting for free connection
+2026-07-28 12:34:01 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100344, worker w3)
+2026-07-28 12:34:04 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100345, worker w3)
+2026-07-28 12:34:08 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100346, worker w3)
+2026-07-28 12:34:11 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100347, worker w3)
+2026-07-28 12:34:15 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100348, worker w3)
+2026-07-28 12:34:19 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100349, worker w3)
+2026-07-28 12:34:23 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100350, worker w3)
+2026-07-28 12:34:27 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100351, worker w3)
+2026-07-28 12:34:31 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100352, worker w3)
+2026-07-28 12:34:35 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100353, worker w3)
+2026-07-28 12:34:39 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100354, worker w3)
+2026-07-28 12:34:43 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100355, worker w3)
+2026-07-28 12:34:47 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100356, worker w3)
+2026-07-28 12:34:51 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100357, worker w3)
+2026-07-28 12:34:57 ERROR [payment-api] ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms (order 100358, worker w3)

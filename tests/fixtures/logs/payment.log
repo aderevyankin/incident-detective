@@ -1,0 +1,4 @@
+{"timestamp": "2026-07-28 16:20:02", "level": "info", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "charge started, amount 1500"}
+{"timestamp": "2026-07-28 16:20:03", "level": "error", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms"}
+{"timestamp": "2026-07-28 16:21:11", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge started, amount 300"}
+{"timestamp": "2026-07-28 16:21:12", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge completed"}

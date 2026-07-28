@@ -30,7 +30,7 @@ if sys.version_info < (3, 8):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kb_common import MAX_SUMMARY_CHARS  # noqa: E402
+from kb_common import MAX_SUMMARY_CHARS, now, run_script  # noqa: E402
 
 MAX_LINE = 8192
 LOG_EXTS = ('.log', '.txt', '.json', '.jsonl', '.ndjson', '.out', '.err')
@@ -91,12 +91,12 @@ def _ts_dmy(m):
 
 
 def _ts_syslog(m):
-    # Jul 28 12:33:44 — года нет, подставляем текущий
+    # Jul 28 12:33:44 — года нет, подставляем текущий (см. kb_common.now)
     g = m.groups()
     mon = MONTHS.get(g[0][:3].lower())
     if not mon:
         return None
-    return datetime(datetime.now().year, mon, int(g[1]), int(g[2]), int(g[3]), int(g[4]))
+    return datetime(now().year, mon, int(g[1]), int(g[2]), int(g[3]), int(g[4]))
 
 
 def _ts_epoch(m):
@@ -150,20 +150,32 @@ def find_timestamp(text, limit=64):
     return dt, end
 
 
+# «1h», «30m», «2d» — окно, отсчитанное назад от текущего момента
+REL_TIME_RE = re.compile(r'^-?(\d+)\s*([smhd])$', re.IGNORECASE)
+REL_UNITS = {'s': 'seconds', 'm': 'minutes', 'h': 'hours', 'd': 'days'}
+
+
 def parse_time_arg(value):
-    dt, _ = find_timestamp(value, limit=len(value) + 1)
+    text = str(value).strip()
+    rel = REL_TIME_RE.match(text)
+    if rel:
+        # «сейчас» берётся из kb_common.now: с заданным INCIDENT_NOW окно
+        # получается тем же в любой день запуска
+        return now() - timedelta(**{REL_UNITS[rel.group(2).lower()]: int(rel.group(1))})
+    dt, _ = find_timestamp(text, limit=len(text) + 1)
     if dt:
         return dt
     for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%d', '%H:%M'):
         try:
-            dt = datetime.strptime(value, fmt)
+            dt = datetime.strptime(text, fmt)
             if fmt == '%H:%M':
-                now = datetime.now()
-                dt = dt.replace(year=now.year, month=now.month, day=now.day)
+                today = now()
+                dt = dt.replace(year=today.year, month=today.month, day=today.day)
             return dt
         except ValueError:
             continue
-    raise SystemExit('Не разобрал время: %r (ожидается «2026-07-28 12:00»)' % value)
+    raise SystemExit('Не разобрал время: %r (ожидается «2026-07-28 12:00», '
+                     '«12:00» или «1h»)' % value)
 
 
 # --------------------------------------------------------------------------
@@ -1126,9 +1138,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    try:
-        sys.exit(main())
-    except BrokenPipeError:
-        pass
-    except KeyboardInterrupt:
-        sys.exit(130)
+    sys.exit(run_script(main, __file__))
