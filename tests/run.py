@@ -9,9 +9,9 @@
 Внешних зависимостей нет: unittest входит в стандартную библиотеку, а скилл не
 тащит зависимостей по своей архитектуре — не тащит их и его проверка.
 
-Проверка совместимости с минимальной версией Python (`tools/check_compat.py`)
-входит сюда же: точка входа должна быть одна, иначе списки проверок у
-разработчика и у CI расходятся.
+Проверка совместимости с минимальной версией Python (`tools/check_compat.py`) и
+проверка документации (`tools/check_docs.py`) входят сюда же: точка входа должна
+быть одна, иначе списки проверок у разработчика и у CI расходятся.
 
 Что прогоном НЕ проверяется: поведение модели — самозапуск скилла, порядок
 шагов разбора, формулировки в ответе. Это инструкции в SKILL.md, и проверяются
@@ -47,11 +47,20 @@ def check_compatibility():
     return code == 0
 
 
+def check_documentation():
+    """README.md и docs/walkthrough.md не разошлись с репозиторием — команды из них
+    запускаются, перечень capability и дерево файлов актуальны (tools/check_docs.py)."""
+    import check_docs
+
+    return check_docs.main([]) == 0
+
+
 def main(argv):
     verbosity = 2 if ('-v' in argv or '--verbose' in argv) else 1
     names = [a for a in argv if not a.startswith('-')]
 
     compatible = check_compatibility()
+    docs_ok = check_documentation()
 
     loader = unittest.TestLoader()
     if names:
@@ -60,10 +69,12 @@ def main(argv):
         suite = loader.discover(HERE, pattern='test_*.py', top_level_dir=HERE)
 
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)
-    if result.wasSuccessful() and compatible:
+    if result.wasSuccessful() and compatible and docs_ok:
         return 0
     if not compatible:
         print('\nПрогон не пройден: проверка совместимости с минимальной версией Python.')
+    if not docs_ok:
+        print('\nПрогон не пройден: проверка документации (tools/check_docs.py).')
     return 1
 
 
