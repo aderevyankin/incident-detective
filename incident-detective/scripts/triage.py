@@ -34,8 +34,10 @@ import confidence  # noqa: E402
 import kb_search  # noqa: E402
 import parse_logs as pl  # noqa: E402
 from kb_common import (  # noqa: E402
-    DEFAULT_MAX_LINES, KIND_INCIDENT, LEVELS, MAX_SUMMARY_CHARS, dump_json, kb_dir,
-    kind_of, load_incidents_fast, run_script, tokenize,
+    DEFAULT_MAX_LINES, ENV_SESSION, ENV_TRACE, KIND_INCIDENT, LEVELS, MAX_SUMMARY_CHARS,
+    REPORT_SCHEMA, VERDICT_INSUFFICIENT, dump_json, git_toplevel, is_auto, kb_dir,
+    kind_of, load_incidents_fast, mode, now, report_path, run_script, scrub_text,
+    tokenize, write_report,
 )
 
 
@@ -170,6 +172,220 @@ def stage_confidence(args, stages, out_dir):
     return stage.finish({'total': total, 'rows': rows, 'payload': payload}, path)
 
 
+# --- машинный отчёт -------------------------------------------------------
+#
+# Единственный машинный выход автономного режима. Значения в него кладут
+# скрипты: числа — `confidence.py`, сигнатуры — `parse_logs.py`, места в коде —
+# `code_hints.py`. Модель добавляет к отчёту формулировки в ответе, а не
+# значения в полях: контракт, который держится на форматировании модели,
+# ломается у потребителя и молча.
+
+# Сколько доказательств каждого вида кладём в отчёт. Отчёт читает обвязка и
+# дежурный, а не человек с временем: десять шаблонов подряд — это уже дамп.
+MAX_EVIDENCE = 5
+
+
+def clean(text):
+    """Очистка теми же правилами, что запись базы знаний: отчёт уезжает в чат
+    обвязки и в тикеты, и сырым строкам логов там не место."""
+    result, _counts = scrub_text(str(text or ''))
+    return result
+
+
+def evidence_from_logs(parsed):
+    rows = []
+    groups = [g for g in parsed.get('groups') or []
+              if g.get('level') in ('ERROR', 'FATAL')] or (parsed.get('groups') or [])
+    for grp in groups[:MAX_EVIDENCE]:
+        origins = list(grp.get('origins') or {})
+        rows.append({
+            'contour': 'logs',
+            'source': ', '.join(origins[:3]) or 'логи',
+            'detail': clean(grp.get('template')),
+            'count': grp.get('count'),
+            'level': grp.get('level'),
+            'first': grp.get('first'),
+            'last': grp.get('last'),
+        })
+    return rows
+
+
+def evidence_from_kb(payload):
+    rows = []
+    for hit in (payload or [])[:MAX_EVIDENCE]:
+        rows.append({
+            'contour': 'kb',
+            'source': hit.get('id'),
+            'detail': clean(hit.get('title')),
+            'score': hit.get('score'),
+            'path': hit.get('path'),
+            'outcome': (hit.get('meta') or {}).get('outcome'),
+        })
+    return rows
+
+
+def evidence_from_code(data):
+    rows = []
+    for frame in (data.get('frames') or [])[:MAX_EVIDENCE]:
+        matches = frame.get('matches') or []
+        if not matches:
+            continue
+        blame = frame.get('blame') or {}
+        rows.append({
+            'contour': 'code',
+            'source': '%s:%s' % (matches[0], frame.get('line')),
+            'detail': clean((frame.get('context') or [{}])[0].get('text')
+                            if isinstance(frame.get('context'), list) else None)
+                      or 'кадр стектрейса сопоставлен с файлом проекта',
+            'commit': blame.get('hash'),
+        })
+    # max(0, ...) обязателен: отрицательный срез отрезал бы хвост списка вместо
+    # того, чтобы не брать из него ничего
+    for hit in (data.get('grep') or [])[:max(0, MAX_EVIDENCE - len(rows))]:
+        rows.append({
+            'contour': 'code',
+            'source': '%s:%s' % (hit.get('path'), hit.get('line')),
+            'detail': clean(hit.get('text')) or 'совпадение по тексту ошибки',
+        })
+    for commit in (data.get('commits') or [])[:2]:
+        rows.append({
+            'contour': 'code',
+            'source': 'коммит %s' % commit.get('hash'),
+            'detail': clean(commit.get('subject')),
+            'date': commit.get('date'),
+        })
+    return rows
+
+
+def next_step_draft(verdict, evidence, args, insufficient):
+    """Черновик следующего шага — тот же выбор, что в диалоге, но без вопроса.
+
+    Ведущий вариант выводится из уровня уверенности: чинить по гипотезе нечего,
+    а баг с выдуманной причиной хуже честной задачи «разобраться».
+    """
+    code_places = [e['source'] for e in evidence if e['contour'] == 'code']
+    where = ' (%s)' % ', '.join(code_places[:2]) if code_places else ''
+    what = args.claim or 'разбор инцидента'
+    scope = ' '.join(p for p in [args.service, args.stand] if p)
+    head = '%s%s' % (what, ': ' + scope if scope else '')
+
+    if insufficient:
+        return {'kind': 'task', 'title': 'Доисследовать: %s' % head,
+                'body': 'Данных для вывода не хватило. Нужно добрать перечисленное в '
+                        'поле missing и повторить разбор.',
+                'why': 'вердикт «данных недостаточно» — тикет с причиной не заводится'}
+    if verdict == 'подтверждено данными' and code_places:
+        return {'kind': 'fix', 'title': 'Починить: %s' % head,
+                'body': 'Причина подтверждена данными, место в коде найдено%s.' % where,
+                'why': 'уровень «подтверждено данными» и место в коде известно'}
+    if verdict in ('подтверждено данными', 'вероятная причина'):
+        return {'kind': 'bug', 'title': 'Баг: %s' % head,
+                'body': 'Причина установлена на уровне «%s»%s. В тикете — сигнатура, '
+                        'окно времени и доказательства из отчёта.' % (verdict, where),
+                'why': 'причина названа, но правки предлагать не на чем' if not code_places
+                       else 'уровень «вероятная причина» — чинить рано, но баг обоснован'}
+    return {'kind': 'task', 'title': 'Доисследовать: %s' % head,
+            'body': 'Уровень вывода — гипотеза. Баг с гипотезой вместо причины не '
+                    'заводится: нужно добрать данные.',
+            'why': 'гипотеза не тянет ни на правки, ни на баг'}
+
+
+def build_report(args, stages, out_dir, card):
+    """Собирает отчёт разбора. Возвращает (payload, путь) или (payload, None)."""
+    logs = stages['logs'].data['parsed'] if stages['logs'].done else None
+    kb_payload = stages['kb'].data['payload'] if stages['kb'].done else None
+    code = stages['code'].data if stages['code'].done else None
+    conf = stages['confidence'].data['payload'] if stages['confidence'].done else None
+
+    evidence = []
+    if logs:
+        evidence.extend(evidence_from_logs(logs))
+    if kb_payload:
+        evidence.extend(evidence_from_kb(kb_payload))
+    if code:
+        evidence.extend(evidence_from_code(code))
+
+    signatures = [s.get('value') for s in (logs or {}).get('signatures') or []
+                  if s.get('value')]
+
+    missing = list(args.missing or [])
+    for stage in stages.values():
+        if not stage.done:
+            missing.append('%s: %s' % (stage.title.lower(), stage.reason))
+    if card and card.get('missing'):
+        missing.extend('карточка инцидента: %s нет в алерте' % part
+                       for part in card['missing'])
+
+    passed = [s for s in stages.values() if s.done]
+    # ни один контур не сошёлся — вывода нет, и догадка вместо него в автономном
+    # режиме дороже: её никто не перечитает
+    insufficient = not passed or bool(args.insufficient)
+    if card and not card.get('sufficient', True):
+        insufficient = True
+
+    verdict = VERDICT_INSUFFICIENT if insufficient else (
+        conf.get('verdict') if conf else VERDICT_INSUFFICIENT)
+    if not conf and not insufficient:
+        insufficient = True
+        verdict = VERDICT_INSUFFICIENT
+
+    incident = {
+        'stand': args.stand, 'service': args.service,
+        'since': args.since.strftime('%Y-%m-%d %H:%M:%S') if args.since else None,
+        'until': args.until.strftime('%Y-%m-%d %H:%M:%S') if args.until else None,
+        'time_scale': 'UTC',
+    }
+    if card:
+        incident.update({
+            'symptom': card.get('symptom'), 'alert_id': card.get('alert_id'),
+            'alert_format': card.get('format'),
+            'started_at': card.get('started_at'),
+            # откуда взято время — из алерта или из INCIDENT_NOW: читатель отчёта
+            # не должен это выяснять
+            'time_source': card.get('time_source'),
+        })
+
+    payload = {
+        'schema': REPORT_SCHEMA,
+        'generated_at': now().strftime('%Y-%m-%d %H:%M:%S'),
+        'mode': mode(),
+        'incident': incident,
+        'verdict': verdict,
+        'confidence': conf.get('confidence') if conf else None,
+        'insufficient': insufficient,
+        'missing': missing,
+        'claim': args.claim,
+        'signature': signatures[0] if signatures else None,
+        'signatures': signatures[:10],
+        'evidence': evidence,
+        'contours': [{'key': s.key, 'title': s.title, 'passed': s.done,
+                      'reason': s.reason} for s in stages.values()],
+        'kb_entry': {'written': False, 'id': None, 'path': None,
+                     'reason': 'запись базы знаний делается отдельным запуском '
+                               'kb_add.py — он и проставит это поле'},
+        'next_step': next_step_draft(verdict, evidence, args, insufficient),
+        'environment': {
+            'python': '%d.%d.%d' % sys.version_info[:3],
+            'limited': False,
+            'git': bool(git_toplevel(args.repo) if args.repo else None),
+        },
+        'artifacts': {
+            'out_dir': out_dir,
+            'report': report_path(out_dir),
+            'stages': {s.key: s.path for s in stages.values() if s.path},
+            'trace_file': os.environ.get(ENV_TRACE),
+            'session_file': os.environ.get(ENV_SESSION),
+        },
+        'stopped_at': args.stopped_at,
+    }
+
+    path = report_path(out_dir)
+    if not write_report(payload, path):
+        sys.stderr.write('warning: отчёт не сохранён: %s\n' % path)
+        return payload, None
+    return payload, path
+
+
 # --- вывод ----------------------------------------------------------------
 
 
@@ -183,7 +399,7 @@ def write_json(out_dir, name, payload):
     return path
 
 
-def render(stages, args, out_dir, out):
+def render(stages, args, out_dir, out, report=None):
     w = out.write
     w('# Разбор инцидента\n\n')
 
@@ -229,8 +445,14 @@ def render(stages, args, out_dir, out):
     for stage in stages.values():
         if stage.path:
             w('- %s: `%s`\n' % (stage.title, stage.path))
+    if report:
+        w('- **Отчёт разбора**: `%s` — вердикт «%s»\n'
+          % (report['path'], report['payload']['verdict']))
     w('\nОни принимаются на вход остальными скриптами скилла: `timeline.py`, '
       '`trace.py`, `kb_add.py`.\n')
+    if report:
+        w('Отчёт — машинный выход разбора: его читает обвязка. Запись базы знаний '
+          'проставляется в него запуском `kb_add.py --report`.\n')
 
 
 def indent_section(text):
@@ -305,7 +527,16 @@ def main(argv=None):
     ap.add_argument('--top', type=int, default=10, help='шаблонов в сводке логов (10)')
     ap.add_argument('--top-kb', type=int, default=5, help='записей базы знаний (5)')
     ap.add_argument('--min-score', type=float, default=1.0)
-    ap.add_argument('--out', help='директория для JSON этапов (по умолчанию временная)')
+    ap.add_argument('--out', help='директория для JSON этапов и отчёта '
+                                  '(по умолчанию временная; в автономном режиме обязателен)')
+    ap.add_argument('--incident', help='карточка инцидента от alert_to_incident.py')
+    ap.add_argument('--missing', action='append',
+                    help='чего не хватило для вывода — попадает в отчёт (можно повторять)')
+    ap.add_argument('--insufficient', action='store_true',
+                    help='завершить разбор вердиктом «данных недостаточно»: источник '
+                         'логов неоднозначен, окружение непригодно и подобное')
+    ap.add_argument('--stopped-at',
+                    help='на каком шаге разбор остановлен — например по потолку прохода')
     ap.add_argument('--max-chars', type=int, default=MAX_SUMMARY_CHARS,
                     help='предельный объём сводки в символах (%d), 0 — без предела'
                          % MAX_SUMMARY_CHARS)
@@ -313,8 +544,30 @@ def main(argv=None):
     ap.add_argument('--encoding', default='utf-8')
     args = ap.parse_args(argv)
 
+    card = None
+    if args.incident:
+        try:
+            with open(args.incident, 'r', encoding='utf-8') as fh:
+                card = json.load(fh)
+        except (OSError, ValueError) as exc:
+            raise SystemExit('Не прочитал карточку инцидента %s: %s' % (args.incident, exc))
+        if not isinstance(card, dict):
+            raise SystemExit('Карточка инцидента %s — не объект JSON' % args.incident)
+        # аргументы командной строки сильнее карточки: обвязка могла сузить окно
+        args.stand = args.stand or card.get('stand')
+        args.service = args.service or card.get('service')
+        args.since = args.since or card.get('since')
+        args.until = args.until or card.get('until')
+
     args.since = pl.parse_time_arg(args.since) if args.since else None
     args.until = pl.parse_time_arg(args.until) if args.until else None
+
+    if is_auto() and not args.out:
+        # отчёт во временной директории, имя которой обвязке неизвестно,
+        # бесполезен: за ним никто не придёт
+        raise SystemExit(
+            'В автономном режиме нужен --out: обвязка задаёт директорию отчёта явно, '
+            'иначе report.json ляжет туда, откуда его никто не заберёт.')
 
     out_dir = args.out or os.path.join(
         os.environ.get('TMPDIR') or '/tmp', 'incident-detective')
@@ -337,8 +590,11 @@ def main(argv=None):
         stages['code'] = Stage('code', 'Код').skip('нет разбора логов — искать нечего')
     stages['confidence'] = stage_confidence(args, stages, out_dir)
 
+    payload, path = build_report(args, stages, out_dir, card)
+    report = {'payload': payload, 'path': path} if path else None
+
     buf = io.StringIO()
-    render(stages, args, out_dir, buf)
+    render(stages, args, out_dir, buf, report)
     sys.stdout.write(fit_output(buf.getvalue(), args.max_chars))
     return 0
 

@@ -1,0 +1,30 @@
+{
+  "receiver": "oncall",
+  "status": "firing",
+  "groupKey": "{}:{alertname=\"PaymentApiErrors\"}",
+  "commonLabels": {
+    "alertname": "PaymentApiErrors",
+    "severity": "critical"
+  },
+  "commonAnnotations": {
+    "runbook": "payment-api/5xx"
+  },
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "PaymentApiErrors",
+        "service": "payment-api",
+        "env": "staging",
+        "severity": "critical",
+        "instance": "payment-api-7"
+      },
+      "annotations": {
+        "summary": "5xx на оплате выше 10% пять минут подряд"
+      },
+      "startsAt": "2026-07-28T16:20:03.123456789Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "fingerprint": "9f2c1a44b7e0"
+    }
+  ]
+}

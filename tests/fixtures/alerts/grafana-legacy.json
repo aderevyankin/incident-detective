@@ -1,0 +1,20 @@
+{
+  "title": "[Alerting] payment-api error rate",
+  "ruleId": 42,
+  "ruleName": "payment-api error rate",
+  "ruleUrl": "https://grafana.example.invalid/d/abc/payment",
+  "state": "alerting",
+  "message": "error rate 12% > 5%",
+  "evalMatches": [
+    {
+      "metric": "errors",
+      "value": 12,
+      "tags": {
+        "service": "payment-api"
+      }
+    }
+  ],
+  "tags": {
+    "env": "stage"
+  }
+}

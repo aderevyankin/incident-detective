@@ -68,6 +68,7 @@ SOURCE_PATTERNS = {
     'parse_logs_window': r"'parse_logs_window':\s*\{'kind':\s*'\w+',\s*'limit':\s*([\d.]+)",
     'triage': r"'triage':\s*\{'kind':\s*'\w+',\s*'limit':\s*([\d.]+)",
     'MAX_SUMMARY_CHARS': r'MAX_SUMMARY_CHARS\s*=\s*(\d+)',
+    'DEFAULT_WINDOW_MIN': r'DEFAULT_WINDOW_MIN\s*=\s*(\d+)',
     'confirmed_threshold': r'подтверждено данными\*\*[^\d]*([\d.]+)',
     'probable_threshold': r'вероятная причина\*\*[^\d]*([\d.]+)',
 }

@@ -222,6 +222,9 @@ def parse_time_arg(value):
 ENV_NOW = 'INCIDENT_NOW'
 # Файл, куда скрипты дописывают факт своего запуска. Не задан — не пишут ничего.
 ENV_TRACE = 'INCIDENT_TRACE_FILE'
+# Поток сессии клиента, сохранённый обвязкой. Скрипты его не пишут — только
+# называют в отчёте, чтобы по одному файлу прогона находились остальные.
+ENV_SESSION = 'INCIDENT_SESSION_FILE'
 
 NOW_FORMATS = ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S',
                '%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M', '%Y-%m-%d')
@@ -263,6 +266,90 @@ def now():
                 'невоспроизводимым молча.' % (ENV_NOW, raw))
     _NOW.append(value)
     return value
+
+
+# --------------------------------------------------------------------------
+# Режим разбора
+# --------------------------------------------------------------------------
+
+# Признак автономного разбора ставит обвязка. Выводить режим из отсутствия
+# терминала или из канала запуска нельзя: поведение скилла стало бы зависеть от
+# того, как его случайно запустили, — то же правило, по которому «сейчас»
+# берётся из INCIDENT_NOW, а не из системных часов.
+ENV_MODE = 'INCIDENT_MODE'
+
+MODE_INTERACTIVE = 'interactive'
+MODE_AUTO = 'auto'
+MODES = (MODE_INTERACTIVE, MODE_AUTO)
+
+_MODE = []
+
+
+def mode():
+    """Режим разбора: из INCIDENT_MODE, иначе диалоговый.
+
+    Неизвестное значение — ошибка запуска, а не повод молча выбрать режим:
+    опечатка в переменной обвязки не должна превращать автономный прогон в
+    диалоговый, который некому вести.
+    """
+    if _MODE:
+        return _MODE[0]
+    raw = os.environ.get(ENV_MODE)
+    if raw is None or not str(raw).strip():
+        value = MODE_INTERACTIVE
+    else:
+        value = str(raw).strip().strip('"\'').lower()
+        if value not in MODES:
+            raise SystemExit(
+                'Не разобрал %s=%r — известны значения: %s. Режим по догадке '
+                'выбирать не буду: в автономном прогоне некому заметить ошибку.'
+                % (ENV_MODE, raw, ', '.join(MODES)))
+    _MODE.append(value)
+    return value
+
+
+def is_auto():
+    """Идёт ли разбор без человека в контуре."""
+    return mode() == MODE_AUTO
+
+
+# --------------------------------------------------------------------------
+# Машинный отчёт разбора
+# --------------------------------------------------------------------------
+
+# Единственный машинный выход автономного режима. Имя фиксированное: обвязка
+# приходит за файлом по известному пути, а не ищет его перебором.
+REPORT_NAME = 'report.json'
+REPORT_SCHEMA = 'incident-detective/report@1'
+
+# Исход разбора, а не код возврата: коды принадлежат клиенту, и отличить по ним
+# честный отказ от обрыва процесса нельзя. Отсутствие файла отчёта обвязка
+# читает как несостоявшийся прогон — это разные события.
+VERDICT_INSUFFICIENT = 'данных недостаточно'
+
+
+def report_path(out_dir):
+    return os.path.join(out_dir, REPORT_NAME)
+
+
+def read_report(path):
+    """Отчёт с диска или None, если его нет или он не читается."""
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            payload = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def write_report(payload, path):
+    """Сохраняет отчёт. False — не сохранился: вызывающий обязан сказать об этом."""
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        dump_json(payload, path)
+    except OSError:
+        return False
+    return True
 
 
 def days_since(date_text, when=None):
@@ -352,6 +439,7 @@ def run_script(main, path, argv=None):
     code = 0
     try:
         now()          # неразобранное INCIDENT_NOW — ошибка до начала работы
+        mode()         # и неизвестный INCIDENT_MODE тоже: молча не выбираем
         code = main() or 0
     except SystemExit as exc:
         code = exc.code

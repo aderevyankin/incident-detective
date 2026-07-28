@@ -277,6 +277,33 @@
       гипотезой: единичная ошибка, стектрейса нет, исход прошлой записи не подтверждён.</p>
   </section>
 
+  <section class="slide" data-title="Автономный разбор от алерта">
+    <h2>Тот же разбор, но человека нет</h2>
+    <p class="hint">Алерт в 03:31, дежурный спит. Обвязка запускает клиента одной командой
+      и наутро читает файл — вопросов задавать некому.</p>
+    <pre>INCIDENT_MODE=auto INCIDENT_NOW="..." INCIDENT_KB_DIR=/srv/incident-kb \
+gigacode -p "Разбери инцидент. Карточка: .../incident.json. Логи: /var/log/payment-api/.
+             Отчёт положи в /srv/incident-runs/9f2c1a44b7e0/."</pre>
+    <table>
+      <caption>Каждый вопрос диалога заменён правилом вывода</caption>
+      <tr><th>Шаг диалога</th><th>Автономный режим</th></tr>
+      <tr><td>стенд, сервис, время</td><td>из полей алерта (Alertmanager, Grafana, Sentry);
+        окно — ±15 минут вокруг времени инцидента</td></tr>
+      <tr><td>источник логов</td><td>переданный путь → карта источников; кандидатов
+        несколько — вердикт, а не выбор наугад</td></tr>
+      <tr><td>где держать базу знаний</td><td>только явная настройка; не задана — разбор идёт,
+        запись не делается</td></tr>
+      <tr><td>следующий шаг</td><td>черновик в отчёте; ни тикет, ни правки не создаются</td></tr>
+    </table>
+    <p><strong>Выход — <code>report.json</code></strong>: вердикт, уверенность, сигнатура,
+      доказательства с источниками, пройденные и пропущенные контуры. Его собирает скрипт, а
+      не формулировка модели. Данных не хватило — вердикт
+      <strong>«данных недостаточно»</strong> с перечнем недостающего: догадка, которую ночью
+      некому проверить, дороже честного отказа.</p>
+    <p class="hint">Прогон от алерта до отчёта, на фикстурах репозитория —
+      <code>docs/walkthrough.md</code>, раздел «Автономный разбор».</p>
+  </section>
+
   <section class="slide" data-title="Скорость">
     <h2>Скорость в цифрах</h2>
     <table>
@@ -311,6 +338,12 @@
     </ul>
     <p>Список выше отражает осознанный выбор границы, а не недоделанную функциональность: скилл
       диагностирует и предлагает, но не действует на стенде и не правит код втихую.</p>
+    <p><strong>В автономном режиме подтверждать некому</strong> — и механизма подтверждения
+      запуска команд у клиента там нет: это измерено прогоном, а не предположено. Поэтому
+      запрет действий держится на <strong>изоляции среды запуска</strong>: sandbox,
+      непривилегированный пользователь, read-only монтирование, сужённый перечень
+      MCP-серверов. Отсюда условие применения: где изоляции нет, автономный режим не
+      применяется — там разбор идёт диалогом. Это осознанное решение, а не недоработка.</p>
   </section>
 
   <section class="slide" data-title="Установка и что дальше">
@@ -352,7 +385,10 @@ cp -R incident-detective .qwen/skills/incident-detective     # проектны�
   {"claim": "подтверждено данными — порог 0.70",
    "source_file": "incident-detective/SKILL.md", "source_key": "confirmed_threshold", "value": 0.70},
   {"claim": "вероятная причина — порог 0.40",
-   "source_file": "incident-detective/SKILL.md", "source_key": "probable_threshold", "value": 0.40}
+   "source_file": "incident-detective/SKILL.md", "source_key": "probable_threshold", "value": 0.40},
+  {"claim": "окно разбора вокруг времени инцидента — ±15 минут",
+   "source_file": "incident-detective/scripts/alert_to_incident.py",
+   "source_key": "DEFAULT_WINDOW_MIN", "value": 15}
 ]
 </script>
 <script type="application/json" id="referenced-files">
@@ -361,6 +397,11 @@ cp -R incident-detective .qwen/skills/incident-detective     # проектны�
   "incident-detective/SKILL.md",
   "incident-detective/scripts/kb_common.py",
   "incident-detective/scripts/triage.py",
+  "incident-detective/scripts/alert_to_incident.py",
+  "incident-detective/references/aiops.md",
+  "incident-detective/templates/aiops-report.md",
+  "tests/fixtures/alerts/alertmanager.json",
+  "docs/walkthrough.md",
   "tests/fixtures/logs/payment.log",
   "tests/fixtures/kb/INC-2026-07-001-payment-pool-exhausted.md",
   "README.md"

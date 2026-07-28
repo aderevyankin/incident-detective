@@ -287,3 +287,112 @@ python3 incident-detective/scripts/kb_search.py --signature ConnectionTimeoutErr
 случалось и чем закончилось. Записи карты в такую выдачу не попадают: виды записей не
 смешиваются. Если совпадений нет, это формулируется как «на других стендах не
 встречалась» — отличимо от «записей в базе нет вообще».
+
+## Автономный разбор: от алерта до `report.json`
+
+Тот же инцидент, но человека в контуре нет: алерт приходит ночью, обвязка запускает
+клиента одной командой и потом читает файл. Прогон ниже — на тех же фикстурах,
+воспроизводится так же.
+
+Вход — payload Alertmanager (`tests/fixtures/alerts/alertmanager.json`). Первый шаг
+превращает его в карточку инцидента; разбор JSON детерминирован и модели не поручается:
+
+```bash
+mkdir -p /tmp/incident-auto-run
+python3 incident-detective/scripts/alert_to_incident.py \
+    --file tests/fixtures/alerts/alertmanager.json --format md
+```
+
+```
+# Карточка инцидента из алерта (alertmanager)
+
+- **стенд**: stage
+- **сервис**: payment-api
+- **симптом**: 5xx на оплате выше 10% пять минут подряд
+- **сигнатура**: PaymentApiErrors
+- **уровень**: critical
+- **время инцидента**: 2026-07-28 16:20:03 UTC (источник: алерт)
+- **окно разбора**: 2026-07-28 16:05:03 — 2026-07-28 16:35:03
+- **идентификатор алерта**: 9f2c1a44b7e0
+```
+
+Ни одного вопроса не задано: стенд, сервис и окно вышли из полей алерта. `staging` из
+метки приведён к принятому в разборе `stage`; чего в алерте нет — отмечается в поле
+`missing`, а не заполняется значением по умолчанию.
+
+Дальше разбор идёт обычными контурами, но с двумя отличиями: карточка подставляется
+флагом `--incident`, а `--out` обязателен — туда ляжет отчёт.
+
+```bash
+python3 incident-detective/scripts/alert_to_incident.py \
+    --file tests/fixtures/alerts/alertmanager.json > /tmp/incident-auto-run/incident.json
+
+INCIDENT_MODE=auto INCIDENT_NOW="2026-07-28 16:30:00" \
+INCIDENT_TRACE_FILE=/tmp/incident-auto-run/calls.log \
+python3 incident-detective/scripts/triage.py tests/fixtures/logs/payment.log \
+    --incident /tmp/incident-auto-run/incident.json \
+    --repo /tmp/incident-demo-repo \
+    --kb tests/fixtures/kb \
+    --out /tmp/incident-auto-run > /dev/null
+
+python3 -c "import json; d = json.load(open('/tmp/incident-auto-run/report.json')); \
+print(d['verdict'], d['confidence'], d['signature'])"
+```
+
+```
+гипотеза 0.39 ConnectionTimeoutError
+```
+
+В `report.json` рядом с вердиктом лежат доказательства, и **у каждого назван источник** —
+файл логов, запись базы знаний или место в коде:
+
+```json
+[
+  {"contour": "logs", "source": "payment.log",
+   "detail": "ConnectionTimeoutError: timed out waiting for connection from pool after <n> ms",
+   "count": 1, "level": "ERROR", "first": "2026-07-28 16:20:03"},
+  {"contour": "kb", "source": "INC-2026-07-001",
+   "detail": "payment-api отдаёт таймауты: исчерпан пул соединений к базе", "score": 51.83},
+  {"contour": "code", "source": "/tmp/incident-demo-repo/src/payment/pool.py:11",
+   "detail": "raise ConnectionTimeoutError("},
+  {"contour": "code", "source": "коммит 5214f89", "detail": "add connection pool",
+   "date": "2026-07-27 20:00"}
+]
+```
+
+Уровень тот же, что в диалоговом разборе того же инцидента, — **гипотеза** (0.39), и
+следующий шаг в отчёте соответствует ему: `kind: task`, доисследование. Баг с причиной,
+оставшейся гипотезой, не заводится ни в одном режиме — а тикет автономный разбор не
+создаёт вовсе, только черновик.
+
+### Данных не хватило
+
+Логи так и не дали — и это тот случай, ради которого режим устроен именно так:
+
+```bash
+mkdir -p /tmp/incident-auto-empty
+INCIDENT_MODE=auto INCIDENT_NOW="2026-07-28 16:30:00" \
+python3 incident-detective/scripts/triage.py /tmp/incident-auto-empty/logs-ne-dali.log \
+    --repo /tmp/incident-demo-repo --kb tests/fixtures/kb \
+    --out /tmp/incident-auto-empty > /dev/null 2>&1
+
+python3 -c "import json; d = json.load(open('/tmp/incident-auto-empty/report.json')); \
+print(d['verdict']); print('\n'.join(d['missing']))"
+```
+
+```
+данных недостаточно
+логи: источники не найдены: /tmp/incident-auto-empty/logs-ne-dali.log
+база знаний: нет разбора логов — искать нечего
+код: нет разбора логов — искать нечего
+уверенность: нечего оценивать: ни один контур не дал данных
+```
+
+Отчёт создан, вердикт честный, недостающее перечислено. Догадки на его месте не
+появилось — а появиться ей было бы легко: сигнатура из алерта известна, запись базы по
+ней нашлась бы, и вывод «опять пул соединений» выглядел бы правдоподобно. Проверить его
+ночью некому, поэтому такой вывод и не делается.
+
+**Отсутствие `report.json` — другое событие.** Оно означает, что прогон не состоялся, и
+разбирается по `session.json` и телеметрии (`calls.log`) рядом. Обвязка обязана различать
+эти два случая: «разбор отказался делать вывод» и «разбора не было».

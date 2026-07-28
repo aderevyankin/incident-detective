@@ -1,0 +1,26 @@
+{
+  "action": "created",
+  "installation": {
+    "uuid": "0d3b7a1c-2f45-4c7a-9a0e-1b2c3d4e5f60"
+  },
+  "data": {
+    "event": {
+      "event_id": "c4f1a09b8d7e4f2ab5c6d7e8f9a0b1c2",
+      "project": "payment-api",
+      "level": "error",
+      "environment": "staging",
+      "timestamp": 1785255603.0,
+      "title": "ConnectionTimeoutError: connection pool exhausted",
+      "culprit": "src/db/pool.py in acquire",
+      "metadata": {
+        "type": "ConnectionTimeoutError",
+        "value": "connection pool exhausted"
+      },
+      "tags": [
+        ["environment", "staging"],
+        ["server_name", "payment-api-7"],
+        ["level", "error"]
+      ]
+    }
+  }
+}

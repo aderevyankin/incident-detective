@@ -11,11 +11,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
-    DEFAULT_KB, DISTINGUISHERS_SECTION, ENV_KB, KB_DEFAULT, KB_PROJECT, KIND_INCIDENT,
-    KIND_SOURCE, KINDS, LEVELS, OUTCOME_UNVERIFIED, OUTCOMES, SECTIONS, VERDICTS,
-    dump_frontmatter, kb_is_empty, kind_of, load_incidents, load_parsed,
-    merge_scrub_counts, next_id, norm_signature, now, project_kb_dir, render_scrub_summary,
-    resolve_kb, run_script, scrub_text, signatures_from_parsed, slugify, source_entry_id,
+    DEFAULT_KB, DISTINGUISHERS_SECTION, ENV_KB, KB_DEFAULT, KB_ENV, KB_FLAG, KB_PROJECT,
+    KIND_INCIDENT, KIND_SOURCE, KINDS, LEVELS, OUTCOME_UNVERIFIED, OUTCOMES, SECTIONS,
+    VERDICTS, dump_frontmatter, is_auto, kb_is_empty, kind_of, load_incidents, load_parsed,
+    merge_scrub_counts, next_id, norm_signature, now, project_kb_dir, read_report,
+    render_scrub_summary, resolve_kb, run_script, scrub_text, signatures_from_parsed,
+    slugify, source_entry_id, write_report,
 )
 
 # Код возврата «расположение базы не выбрано»: отличается и от ошибки аргументов
@@ -36,6 +37,23 @@ def scrub(text, counts=None):
     if counts is not None:
         merge_scrub_counts(counts, found)
     return clean
+
+
+def find_by_signature(incidents, signatures):
+    """Запись базы с той же сигнатурой или None.
+
+    Флапающий алерт за ночь порождает десятки одинаковых разборов: без этого
+    поиска каждый из них завёл бы свою запись, и база превратилась бы в ленту
+    повторов вместо знания.
+    """
+    wanted = {norm_signature(s) for s in signatures if norm_signature(s)}
+    if not wanted:
+        return None
+    for inc in incidents:
+        known = {norm_signature(s) for s in inc['meta'].get('signatures') or []}
+        if wanted & known:
+            return inc
+    return None
 
 
 def split_csv(values):
@@ -77,7 +95,26 @@ def build_body(sections):
     return '\n'.join(parts)
 
 
-def store(text, path, directory, kb_source, lines, action, scrub_counts, dry_run):
+def note_in_report(report, entry):
+    """Проставляет в отчёте разбора, что стало с записью базы знаний.
+
+    Отчёт читает обвязка, а не человек в чате: «запись не сделана и почему» там
+    должно быть значением поля, а не отсутствием строки.
+    """
+    if not report:
+        return
+    payload = read_report(report)
+    if payload is None:
+        sys.stderr.write('warning: отчёт %s не прочитан — отметку о записи базы '
+                         'знаний проставить некуда\n' % report)
+        return
+    payload['kb_entry'] = entry
+    if not write_report(payload, report):
+        sys.stderr.write('warning: отчёт %s не сохранён\n' % report)
+
+
+def store(text, path, directory, kb_source, lines, action, scrub_counts, dry_run,
+          report=None, entry_id=None):
     """Общий хвост записи: предпросмотр либо файл, отчёт и пересборка индекса."""
     if dry_run:
         # Текст здесь уже очищен — ровно то, что записалось бы. Отдельного
@@ -108,6 +145,9 @@ def store(text, path, directory, kb_source, lines, action, scrub_counts, dry_run
         # маскировки нужного идентификатора, ни того, что персональные данные
         # вообще были в тексте.
         print(summary)
+
+    note_in_report(report, {'written': True, 'id': entry_id, 'path': path,
+                            'action': action, 'reason': None})
 
     try:
         import kb_index
@@ -278,7 +318,7 @@ def add_source(args, directory, entries, kb_source):
         lines.append('источник %s помечен как %s' % (args.mark_checked, args.verdict))
     action = 'обновлена' if target is not None else 'создана'
     return store(text, path, directory, kb_source, lines, action, scrub_counts,
-                 args.dry_run)
+                 args.dry_run, report=args.report, entry_id=meta['id'])
 
 
 def main(argv=None):
@@ -331,10 +371,26 @@ def main(argv=None):
     ap.add_argument('--note', help='карта: причина пометки, коротко')
     ap.add_argument('--date', help='дата разбора YYYY-MM-DD (по умолчанию сегодня)')
     ap.add_argument('--kb', help='директория базы знаний')
+    ap.add_argument('--report',
+                    help='отчёт разбора (report.json) — проставить в нём, что стало '
+                         'с записью базы знаний')
     ap.add_argument('--dry-run', action='store_true', help='показать результат, но не писать')
     args = ap.parse_args(argv)
 
     directory, source = resolve_kb(args.kb)
+
+    if is_auto() and source not in (KB_FLAG, KB_ENV):
+        # Спросить некого, а выбрать за пользователя, куда положить запись,
+        # нельзя: база проекта и база внутри скилла — разные решения, и в
+        # автономном прогоне их принимает обвязка, задав путь явно. Разбор при
+        # этом состоялся, поэтому это не ошибка, а отметка в отчёте.
+        reason = ('расположение базы знаний не задано (ни --kb, ни %s) — '
+                  'в автономном режиме запись не создаётся' % ENV_KB)
+        print('Запись в базу знаний не сделана: %s' % reason)
+        note_in_report(args.report, {'written': False, 'id': None, 'path': None,
+                                     'action': None, 'reason': reason})
+        return 0
+
     if source == KB_DEFAULT and kb_is_empty(directory):
         # Расположение никто не выбирал: ни флага, ни переменной, ни базы в
         # корне репозитория, ни записей внутри скилла. Спросить скрипт не может
@@ -391,6 +447,14 @@ def main(argv=None):
         if kind_of(target['meta']) == KIND_SOURCE:
             raise SystemExit('%s — запись карты источников, а не разбор: '
                              'обновляй её с --kind source' % target['meta'].get('id'))
+
+    if target is None and is_auto():
+        # повтор известной сигнатуры обновляет запись, а не плодит новую:
+        # спросить «это тот же случай?» в автономном прогоне некого
+        target = find_by_signature(incidents, signatures)
+        if target is not None:
+            print('Сигнатура уже описана записью %s — обновляю её, дубля не завожу'
+                  % target['meta'].get('id'))
 
     if target is None and not title:
         raise SystemExit('Для новой записи нужен --title')
@@ -486,7 +550,8 @@ def main(argv=None):
     if meta.get('signatures'):
         lines.append('сигнатур: %d' % len(meta['signatures']))
     action = 'дополнена' if target is not None else 'создана'
-    return store(text, path, directory, source, lines, action, scrub_counts, args.dry_run)
+    return store(text, path, directory, source, lines, action, scrub_counts, args.dry_run,
+                 report=args.report, entry_id=meta['id'])
 
 
 if __name__ == '__main__':
