@@ -432,9 +432,36 @@ def main(argv=None):
         # 'access' — служебный компонент nginx-парсера, не сервис
         services.extend([s for s in list(parsed.get('stats', {}).get('services', {}))[:3]
                          if s.lower() != 'access'])
-    services = merge_list([], services)
+    # Списочные поля чистятся здесь, в точке сбора значений, и той же функцией,
+    # что тексты разделов: имя сервиса приезжает из разбора логов, а стенд и теги
+    # — из слов человека или из алерта, и секрет в них так же не должен доехать
+    # до базы. Очистка на выходе, в dump_frontmatter, не годится: там же пишутся
+    # записи карты источников, где адреса и запросы — легитимные данные.
+    services = merge_list([], [scrub(s, scrub_counts) for s in services])
+    stands = [scrub(s, scrub_counts) for s in split_csv(args.stand)]
+    tags = [scrub(t, scrub_counts) for t in split_csv(args.tags)]
 
     title = scrub(args.title, scrub_counts) if args.title else args.title
+
+    # Разделы разбора нужны дважды: их текстом дополняется тело записи и по нему
+    # же видно, что обновление описывает новый случай, а не правит карточку.
+    updates = [
+        ('Симптомы', args.symptoms),
+        ('Диагностика', args.diagnosis),
+        ('Причина', args.root_cause),
+        ('Решение', args.fix),
+        ('Проверка', args.verify),
+        (DISTINGUISHERS_SECTION, args.distinguishing),
+        ('Заметки', args.notes),
+    ]
+
+    # Свидетельство повтора: обновление принесло следы нового случая — сигнатуру,
+    # разбор логов, стенд или текст разделов разбора. Правка карточки (исход,
+    # статус, severity, теги, заголовок, связи) повтором не является: счётчик
+    # переиспользования отвечает на вопрос «сколько раз запись пригодилась», и
+    # накрученный сменой исхода он врал бы в выдаче поиска.
+    repeat_evidence = bool(args.signature or args.from_parsed or args.stand
+                           or any(value for _name, value in updates))
 
     target = None
     if args.update:
@@ -468,9 +495,9 @@ def main(argv=None):
             'kind': KIND_INCIDENT,
             'title': title,
             'date': date,
-            'stands': split_csv(args.stand),
+            'stands': stands,
             'services': services,
-            'tags': split_csv(args.tags),
+            'tags': tags,
             'status': args.status,
             # фикс ещё не подтверждён практикой — по умолчанию исход «не проверена»,
             # даже если запись создаётся сразу после разбора
@@ -488,9 +515,9 @@ def main(argv=None):
         existing_body = target['body']
         if title:
             meta['title'] = title
-        meta['stands'] = merge_list(meta.get('stands'), split_csv(args.stand))
+        meta['stands'] = merge_list(meta.get('stands'), stands)
         meta['services'] = merge_list(meta.get('services'), services)
-        meta['tags'] = merge_list(meta.get('tags'), split_csv(args.tags))
+        meta['tags'] = merge_list(meta.get('tags'), tags)
         if args.severity:
             meta['severity'] = args.severity
         if args.status:
@@ -499,10 +526,11 @@ def main(argv=None):
             meta['outcome'] = args.outcome
             meta['outcome_date'] = date
         meta.setdefault('date', date)
-        # `--update` фиксирует зафиксированный повтор инцидента — это наблюдаемое
-        # событие, а не самооценка полезности записи
-        meta['reuse_count'] = int(meta.get('reuse_count') or 0) + 1
-        meta['reused_at'] = date
+        if repeat_evidence:
+            # повтор инцидента — наблюдаемое событие, а не самооценка полезности
+            # записи; без следов нового случая счётчик остаётся как был
+            meta['reuse_count'] = int(meta.get('reuse_count') or 0) + 1
+            meta['reused_at'] = date
 
     meta['signatures'] = merge_signatures(meta.get('signatures'), signatures)
     if args.file:
@@ -512,15 +540,6 @@ def main(argv=None):
     if args.related:
         meta['related'] = merge_list(meta.get('related'), split_csv(args.related))
 
-    updates = [
-        ('Симптомы', args.symptoms),
-        ('Диагностика', args.diagnosis),
-        ('Причина', args.root_cause),
-        ('Решение', args.fix),
-        ('Проверка', args.verify),
-        (DISTINGUISHERS_SECTION, args.distinguishing),
-        ('Заметки', args.notes),
-    ]
     for name, value in updates:
         if not value:
             continue
@@ -531,10 +550,11 @@ def main(argv=None):
         else:
             sections[name] = value
 
-    if target is not None and not any(v for _n, v in updates):
-        # ничего не дополняли текстом — фиксируем повтор
+    if target is not None and repeat_evidence and not any(v for _n, v in updates):
+        # повтор пришёл без текста разбора — фиксируем сам факт повтора; правка
+        # карточки такой заметки не заслуживает, повтора за ней нет
         note = 'Повторилось %s%s.' % (
-            date, ' на стенде ' + ', '.join(split_csv(args.stand)) if args.stand else '')
+            date, ' на стенде ' + ', '.join(stands) if stands else '')
         sections['Заметки'] = (sections.get('Заметки', '').strip() + '\n\n' + note).strip()
 
     body = build_body(sections)

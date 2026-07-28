@@ -196,6 +196,77 @@ class ReuseCounter(ScriptCase):
         # прежнее содержимое записи (заголовок) не потерялось
         self.assertIn('квота провайдера', after.get('title', '') + '')
 
+    def _body(self, record_id):
+        with open(self._record_path(record_id), 'r', encoding='utf-8') as fh:
+            return fh.read()
+
+    def test_outcome_only_update_is_not_a_repeat(self):
+        """Опровержение причины — не повтор инцидента: счётчик стоит на месте.
+
+        Счётчик переиспользования говорит, сколько раз запись пригодилась при
+        повторе. Смена исхода — правка карточки, никакого нового случая за ней
+        нет, и накрученный ею счётчик врал бы в выдаче поиска.
+        """
+        code, _out, err = self.run_script(
+            'kb_add.py', ['--update', CONFIRMED, '--outcome', 'refuted', '--kb', self.kb])
+        self.assertEqual(code, 0, err)
+        after = self._read_meta(CONFIRMED)
+        self.assertEqual(after.get('outcome'), 'refuted')
+        self.assertNotIn('reuse_count', after)
+        self.assertNotIn('reused_at', after)
+        self.assertNotIn('Повторилось', self._body(CONFIRMED))
+
+    def test_card_only_update_is_not_a_repeat(self):
+        """Статус, severity, теги, заголовок и связи — тоже правка карточки."""
+        code, _out, err = self.run_script(
+            'kb_add.py', ['--update', CONFIRMED, '--status', 'workaround',
+                          '--severity', 'low', '--tags', 'quota',
+                          '--title', 'квота провайдера исчерпана',
+                          '--related', 'INC-2026-01-003', '--kb', self.kb])
+        self.assertEqual(code, 0, err)
+        after = self._read_meta(CONFIRMED)
+        self.assertEqual(after.get('status'), 'workaround')
+        self.assertNotIn('reuse_count', after)
+        self.assertNotIn('reused_at', after)
+        self.assertNotIn('Повторилось', self._body(CONFIRMED))
+
+    def test_update_with_repeat_evidence_increments(self):
+        """Стенд, сигнатура, разбор логов и текст разделов — следы нового случая."""
+        cases = (
+            ['--stand', 'prod'],
+            ['--signature', 'QuotaExceededError'],
+            ['--symptoms', 'снова 429 на оплате'],
+        )
+        for extra in cases:
+            code, _out, err = self.run_script(
+                'kb_add.py', ['--update', CONFIRMED, '--kb', self.kb] + extra)
+            self.assertEqual(code, 0, err)
+        after = self._read_meta(CONFIRMED)
+        self.assertEqual(str(after.get('reuse_count')), str(len(cases)))
+        self.assertEqual(after.get('reused_at'), helpers.NOW.split()[0])
+
+    def test_update_from_parsed_increments(self):
+        parsed = os.path.join(self.tmp, 'parsed.json')
+        with open(parsed, 'w', encoding='utf-8') as fh:
+            json.dump({'signatures': [{'value': 'QuotaExceededError'}]}, fh)
+        code, _out, err = self.run_script(
+            'kb_add.py', ['--update', CONFIRMED, '--from-parsed', parsed, '--kb', self.kb])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(str(self._read_meta(CONFIRMED).get('reuse_count')), '1')
+
+    def test_signature_pickup_in_auto_mode_counts_as_repeat(self):
+        """Автономный режим нашёл запись по сигнатуре — это повтор по определению."""
+        code, out, err = self.run_script(
+            'kb_add.py',
+            ['--title', 'снова 429 от провайдера', '--signature', 'QuotaExceededError',
+             '--kb', self.kb],
+            env={'INCIDENT_MODE': 'auto'})
+        self.assertEqual(code, 0, err)
+        self.assertIn(CONFIRMED, out)
+        after = self._read_meta(CONFIRMED)
+        self.assertEqual(str(after.get('reuse_count')), '1')
+        self.assertEqual(after.get('reused_at'), helpers.NOW.split()[0])
+
 
 class LegacyRecordCompatibility(ScriptCase):
     """Запись без новых полей читается и обновляется без ошибок."""
