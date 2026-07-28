@@ -1,0 +1,12 @@
+{
+  "fixture": "mixed_zones.log",
+  "why": "Одна лента, в которой gateway пишет время с суффиксом Z, а payment — без указания зоны вовсе. Зона наивных записей неизвестна, взять её неоткуда, и порядок между двумя группами недостоверен: gateway выглядит первым, но был бы вторым, если payment пишет, скажем, в UTC+3. Разбор обязан не чинить это молча, а назвать вслух — проверяется в test_timezones.",
+  "expect": {
+    "records": 3,
+    "formats": {"plain": 3},
+    "levels": {"ERROR": 3},
+    "exceptions": {"ConnectionTimeoutError": 2, "GatewayTimeoutError": 1},
+    "first_ts": "2026-07-28 15:00:05",
+    "last_ts": "2026-07-28 15:00:09"
+  }
+}

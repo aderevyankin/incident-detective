@@ -1,0 +1,13 @@
+{
+  "fixture": "timezones.log",
+  "why": "Четыре сервиса пишут время с разными, но явно указанными смещениями: Z, +03:00, -0200, -05. Все шесть записей — один и тот же промежуток 15:00:01—15:00:12 UTC, и проверяется именно это. По голым числам из строк порядок получился бы обратным: reporting с «10:00:12» выглядел бы первым, payment с «18:00:01» — последним, и разбор указал бы не на тот сервис. Смешения зон здесь нет: зона известна у всех записей.",
+  "expect": {
+    "records": 6,
+    "formats": {"plain": 6},
+    "levels": {"ERROR": 4, "WARN": 1, "INFO": 1},
+    "exceptions": {"GatewayTimeoutError": 2, "ConnectionTimeoutError": 2},
+    "first_ts": "2026-07-28 15:00:01",
+    "last_ts": "2026-07-28 15:00:12",
+    "signatures_contain": ["ConnectionTimeoutError", "GatewayTimeoutError"]
+  }
+}

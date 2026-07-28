@@ -33,8 +33,11 @@ class ExpectedFixtures(ScriptCase):
                     for n in os.listdir(helpers.EXPECTED) if n.endswith('.json')}
         on_disk = {n for n in os.listdir(helpers.LOGS) if n.endswith('.log')}
         # краевые случаи лежат в logs/edge и проверяются устойчивостью, а не
-        # утверждениями о разборе
-        forgotten = sorted(on_disk - declared - {'gateway.log', 'payment.log'})
+        # утверждениями о разборе; парные фикстуры проверяются цепочкой и
+        # хронологией — по одному файлу из пары утверждать нечего
+        pairs = {'gateway.log', 'payment.log',
+                 'clock_skew_alpha.log', 'clock_skew_beta.log'}
+        forgotten = sorted(on_disk - declared - pairs)
         self.assertEqual(forgotten, [],
                          'нет ожидаемого результата для фикстур: %s' % forgotten)
 

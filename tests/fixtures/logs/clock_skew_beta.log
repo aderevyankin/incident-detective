@@ -1,0 +1,4 @@
+2026-07-28T16:00:05Z [beta] ERROR PoolExhaustedError: no free connection trace_id=req-a1
+2026-07-28T16:00:15Z [beta] ERROR ReadTimeoutError: upstream stayed silent trace_id=req-b2
+2026-07-28T16:00:25Z [beta] ERROR SerializationError: bad payload rejected trace_id=req-c3
+2026-07-28T16:00:35Z [beta] ERROR CircuitOpenError: breaker tripped open trace_id=req-d4

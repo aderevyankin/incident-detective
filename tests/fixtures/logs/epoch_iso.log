@@ -1,0 +1,3 @@
+1785250800 collector INFO heartbeat ok, queue depth 3
+1785250804.250 collector ERROR ConnectionTimeoutError: timed out waiting for connection from pool
+2026-07-28T15:00:06Z api ERROR ConnectionTimeoutError: timed out waiting for connection from pool

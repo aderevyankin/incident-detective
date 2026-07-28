@@ -1,0 +1,6 @@
+2026-07-28T15:00:05Z gateway ERROR GatewayTimeoutError: upstream did not answer in 3000 ms
+2026-07-28T15:00:07Z gateway ERROR GatewayTimeoutError: upstream did not answer in 3000 ms
+2026-07-28T18:00:01+03:00 payment ERROR ConnectionTimeoutError: timed out waiting for connection from pool
+2026-07-28T18:00:03+03:00 payment ERROR ConnectionTimeoutError: timed out waiting for connection from pool
+2026-07-28T13:00:09-0200 billing WARN retry scheduled for settlement batch
+2026-07-28T10:00:12-05 reporting INFO nightly export finished
