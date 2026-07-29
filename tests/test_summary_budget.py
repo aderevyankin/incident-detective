@@ -61,30 +61,33 @@ class DefaultSummaryBudget(ScriptCase):
                          % ((i // 60) % 60, i % 60, tag, tag, tag))
         return path
 
-    # Укладка вывода считается по разделу переменной длины, а разделы вокруг него
-    # в замер не входят — сводка `trace.py` и лента `timeline.py` перебирают предел
-    # на несколько сотен символов. Это отдельная находка о механизме укладки, и
-    # здесь она не подгоняется под ассерт: проверяется, что предел по умолчанию
-    # действует и объявляется, с допуском на непосчитанные разделы.
-    OVERHEAD = 1.1
-
+    # Предел считается по всему выводу запуска, а не по одному укладываемому
+    # разделу: шапка, сводные строки и хвост входят в те же 12 000. Допуска здесь
+    # нет намеренно — «почти уложились» означает, что в контекст агента уехало
+    # больше объявленного.
     def test_trace_summary_is_capped_without_the_flag(self):
         path = self._big_log()
         code, out, err = self.run_script(
             'trace.py', ['--log', 'a=' + path, '--id', 't-0', '--records', '400'])
         self.assertEqual(code, 0, err)
         self.assertIn('Не показано записей', out, 'усечение не объявлено')
-        self.assertLess(len(out), MAX_SUMMARY_CHARS * self.OVERHEAD,
-                        'сводка без --max-chars не ограничена вовсе: %d' % len(out))
+        self.assertLessEqual(len(out), MAX_SUMMARY_CHARS,
+                             'сводка trace.py без --max-chars превысила бюджет: '
+                             '%d > %d' % (len(out), MAX_SUMMARY_CHARS))
 
     def test_timeline_summary_is_capped_without_the_flag(self):
         path = self._many_templates_log()
         code, out, err = self.run_script('timeline.py', ['--log', 'a=' + path])
         self.assertEqual(code, 0, err)
         self.assertIn('Не показано событий', out, 'усечение не объявлено')
-        self.assertLess(len(out), MAX_SUMMARY_CHARS * self.OVERHEAD,
-                        'лента без --max-chars не ограничена вовсе: %d' % len(out))
+        self.assertLessEqual(len(out), MAX_SUMMARY_CHARS,
+                             'лента timeline.py без --max-chars превысила бюджет: '
+                             '%d > %d' % (len(out), MAX_SUMMARY_CHARS))
 
+    # Проверки ниже отвечают на другой вопрос — действует ли укладка вообще, — и
+    # держатся отдельно от строгих ассертов выше. Сломанная укладка роняет их, а
+    # неточный расчёт остатка — только строгие: по тому, что именно упало, сразу
+    # видно, какая из двух поломок случилась.
     def test_without_the_budget_the_same_summary_is_longer(self):
         """Обрезал именно бюджет, а не нехватка данных."""
         path = self._big_log()
@@ -93,6 +96,15 @@ class DefaultSummaryBudget(ScriptCase):
         _code, full, _err = self.run_script(
             'trace.py', ['--log', 'a=' + path, '--id', 't-0', '--records', '400',
                          '--max-chars', '0'])
+        self.assertGreater(len(full), MAX_SUMMARY_CHARS)
+        self.assertLess(len(capped), len(full))
+
+    def test_without_the_budget_the_same_timeline_is_longer(self):
+        """То же для ленты: без предела она заметно длиннее."""
+        path = self._many_templates_log()
+        _code, capped, _err = self.run_script('timeline.py', ['--log', 'a=' + path])
+        _code, full, _err = self.run_script(
+            'timeline.py', ['--log', 'a=' + path, '--max-chars', '0'])
         self.assertGreater(len(full), MAX_SUMMARY_CHARS)
         self.assertLess(len(capped), len(full))
 

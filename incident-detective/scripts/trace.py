@@ -17,6 +17,7 @@
 """
 
 import argparse
+import io
 import os
 import sys
 from collections import Counter, OrderedDict
@@ -27,8 +28,8 @@ from kb_common import require_python; require_python()  # noqa: E402
 
 import parse_logs as pl  # noqa: E402
 from kb_common import (  # noqa: E402
-    DEFAULT_MAX_LINES, MAX_SUMMARY_CHARS, TIME_SCALE, apply_offset, dump_json,
-    dump_overflow, estimate_clock_skew, fit_by_render, parse_offset_arg,
+    DEFAULT_MAX_LINES, MAX_SUMMARY_CHARS, TAIL_RESERVE, TIME_SCALE, apply_offset,
+    dump_json, dump_overflow, estimate_clock_skew, fit_by_render, parse_offset_arg,
     parse_time_arg, render_clock_findings, run_script, sort_key,
 )
 
@@ -266,6 +267,19 @@ def render_candidates(items, out, total, sources):
 
 
 def render_chain(trace_id, hops, matched, out, args):
+    """Цепочка в пределах бюджета объёма.
+
+    Вывод собирается в буфер, потому что раздел записей укладывается в остаток
+    от уже написанного: шапка, таблица хопов и разбор первой ошибки — часть тех
+    же 12 000 символов, и оценивать их заранее константой значит промахиваться
+    на разницу.
+    """
+    buf = io.StringIO()
+    _render_chain(trace_id, hops, matched, buf, args)
+    out.write(buf.getvalue())
+
+
+def _render_chain(trace_id, hops, matched, out, args):
     w = out.write
     if not hops:
         w('Запрос `%s` не найден ни в одном источнике.\n' % trace_id)
@@ -341,8 +355,11 @@ def render_chain(trace_id, hops, matched, out, args):
 
         # без бюджета `--records 500` уводил в контекст сотни килобайт сырых
         # записей; полный список остаётся доступен через файл, если что-то не
-        # поместилось
-        shown, hidden = fit_by_render(rows, render_row, args.max_chars, reserve=260)
+        # поместилось. Место под записи — остаток бюджета от уже написанного,
+        # а резерв держится только под заголовок раздела и строку об усечении
+        shown, hidden = fit_by_render(rows, render_row, args.max_chars,
+                                      reserve=TAIL_RESERVE,
+                                      used=len(out.getvalue()))
         w('## Записи (%d из %d)\n\n' % (len(shown), len(matched)))
         for pair in shown:
             render_row(pair, w)

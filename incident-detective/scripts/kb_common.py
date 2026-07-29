@@ -146,14 +146,26 @@ def dump_overflow(payload, name):
     return path
 
 
-def fit_by_render(items, render, budget, reserve=0):
+# Заголовок раздела и строка «не показано ещё N» с путём к файлу полного
+# результата пишутся уже после укладки, и их длина заранее не известна. Всё
+# остальное — шапка, сводные строки, хвостовые разделы — считается по факту и
+# передаётся через `used`: угаданной константой покрывается только это.
+TAIL_RESERVE = 320
+
+
+def fit_by_render(items, render, budget, reserve=0, used=0):
     """Сколько элементов поместится в бюджет объёма.
 
     `render(item, write)` пишет один элемент через переданную `write`;
     функция суммирует фактический размер вывода, а не оценивает его на глаз —
     так же поступают все существующие реализации, которые эта функция сводит
-    в одну. `reserve` — место, зарезервированное под хвост (шапки следующих
-    разделов, строка «не показано ещё N»).
+    в одну.
+
+    Бюджет считается на **весь** вывод запуска, а не на один укладываемый
+    раздел, поэтому вызывающий код передаёт в `used` фактическую длину того,
+    что уже написано и что будет написано после (шапка, сводные строки,
+    хвостовые разделы). `reserve` остаётся только под то, чью длину заранее
+    узнать неоткуда, — см. `TAIL_RESERVE`.
 
     Возвращает (показанные элементы, число скрытых). Бюджет ``<= 0`` —
     предела нет, показаны все элементы.
@@ -161,14 +173,14 @@ def fit_by_render(items, render, budget, reserve=0):
     if budget is None or budget <= 0:
         items = list(items)
         return items, 0
-    room = max(budget - reserve, 0)
-    used = 0
+    room = max(budget - used - reserve, 0)
+    taken = 0
     shown = []
     for item in items:
         buf = io.StringIO()
         render(item, buf.write)
-        used += len(buf.getvalue())
-        if used > room and shown:
+        taken += len(buf.getvalue())
+        if taken > room and shown:
             break
         shown.append(item)
     items = list(items)

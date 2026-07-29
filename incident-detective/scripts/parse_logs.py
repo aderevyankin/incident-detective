@@ -26,8 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
-    DEFAULT_MAX_LINES, EXC_RE, LEVELS, LEVEL_ORD, MAX_SUMMARY_CHARS, TIME_SCALE,
-    dump_json, now, run_script,
+    DEFAULT_MAX_LINES, EXC_RE, LEVELS, LEVEL_ORD, MAX_SUMMARY_CHARS, TAIL_RESERVE,
+    TIME_SCALE, dump_json, now, run_script,
 )
 from kb_common import parse_time_arg as _kb_parse_time_arg  # noqa: E402
 
@@ -996,9 +996,10 @@ def render_md(result, args, out):
     _render_md(result, args, head, None, head_only=True)
     tail = io.StringIO()
     _render_tail(result, args, tail)
-    # 320 символов — заголовок секции шаблонов и строка о том, что часть скрыта:
-    # они пишутся уже после подгонки, и без резерва сводка вылезает за бюджет
-    room = budget - len(head.getvalue()) - len(tail.getvalue()) - 320
+    # то же правило, что в `trace.py` и `timeline.py`: шапка и хвост вычитаются
+    # по фактической длине, а константой резервируется только заголовок секции и
+    # строка о том, что часть скрыта, — они пишутся уже после подгонки
+    room = budget - len(head.getvalue()) - len(tail.getvalue()) - TAIL_RESERVE
     _render_md(result, args, out, room)
 
 

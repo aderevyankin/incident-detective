@@ -20,6 +20,7 @@
 """
 
 import argparse
+import io
 import json
 import os
 import re
@@ -32,9 +33,9 @@ from kb_common import require_python; require_python()  # noqa: E402
 import parse_logs as pl  # noqa: E402
 from code_hints import commits_in_window, is_git_repo  # noqa: E402
 from kb_common import (  # noqa: E402
-    DEFAULT_MAX_LINES, MAX_SUMMARY_CHARS, TIME_SCALE, apply_offset, dump_json,
-    dump_overflow, estimate_clock_skew, fit_by_render, parse_offset_arg, parse_time_arg,
-    render_clock_findings, run_script, sort_key,
+    DEFAULT_MAX_LINES, MAX_SUMMARY_CHARS, TAIL_RESERVE, TIME_SCALE, apply_offset,
+    dump_json, dump_overflow, estimate_clock_skew, fit_by_render, parse_offset_arg,
+    parse_time_arg, render_clock_findings, run_script, sort_key,
 )
 
 SPIKE_FACTOR = 3.0
@@ -239,6 +240,19 @@ def overflow_events(events):
 
 
 def render_md(events, out, window, offsets=None, clocks=None, budget=0):
+    """Лента в пределах бюджета объёма.
+
+    Вывод собирается в буфер: события укладываются в остаток бюджета от уже
+    написанной шапки и от заранее посчитанного хвоста о самом раннем событии.
+    И то и другое — часть тех же 12 000 символов, и заменять их константой
+    значит промахиваться на разницу.
+    """
+    buf = io.StringIO()
+    _render_md(events, buf, window, offsets, clocks, budget)
+    out.write(buf.getvalue())
+
+
+def _render_md(events, out, window, offsets=None, clocks=None, budget=0):
     w = out.write
     w('# Хронология инцидента\n\n')
     if not events:
@@ -269,8 +283,13 @@ def render_md(events, out, window, offsets=None, clocks=None, budget=0):
 
     # ленте нужен предел объёма так же, как сводке логов: события идут в
     # хронологическом порядке, и обрезка хвоста не теряет самое важное — то, что
-    # случилось раньше
-    shown, hidden = fit_by_render(events, render_event, budget, reserve=320)
+    # случилось раньше. Хвост о самом раннем событии от укладки не зависит и
+    # потому считается заранее — иначе он вылезет за предел уже после неё
+    tail = io.StringIO()
+    _render_tail(events, tail.write)
+    shown, hidden = fit_by_render(events, render_event, budget,
+                                  reserve=TAIL_RESERVE,
+                                  used=len(out.getvalue()) + len(tail.getvalue()))
 
     prev = None
     for ev in shown:
@@ -297,16 +316,22 @@ def render_md(events, out, window, offsets=None, clocks=None, budget=0):
         note = (' Полный список: `%s`.' % full) if full else ''
         w('_Не показано событий: %d — лента ограничена по объёму.%s_\n\n' % (hidden, note))
 
+    w(tail.getvalue())
+
+
+def _render_tail(events, w):
+    """Хвост ленты: он строится по всем событиям, а не по показанным."""
     firsts = [e for e in events if e['kind'] == 'первое появление']
-    if firsts:
-        w('---\n\n**Самое раннее новое событие:** %s %s — %s (%s)\n\n'
-          % (firsts[0]['ts'].strftime('%m-%d %H:%M:%S'), TIME_SCALE,
-             firsts[0]['text'][:100], firsts[0]['source']))
-        w('Причину ищи здесь и раньше по времени. Всё, что появилось позже, '
-          'скорее всего следствие.\n')
-        if mixed_zones(events):
-            w('\nПорядок этой ленты недостоверен — см. предупреждение о зонах выше: '
-              'вывод о том, что было первым, может смениться после сверки зон.\n')
+    if not firsts:
+        return
+    w('---\n\n**Самое раннее новое событие:** %s %s — %s (%s)\n\n'
+      % (firsts[0]['ts'].strftime('%m-%d %H:%M:%S'), TIME_SCALE,
+         firsts[0]['text'][:100], firsts[0]['source']))
+    w('Причину ищи здесь и раньше по времени. Всё, что появилось позже, '
+      'скорее всего следствие.\n')
+    if mixed_zones(events):
+        w('\nПорядок этой ленты недостоверен — см. предупреждение о зонах выше: '
+          'вывод о том, что было первым, может смениться после сверки зон.\n')
 
 
 def main(argv=None):
