@@ -27,7 +27,7 @@ from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
     DEFAULT_MAX_LINES, EXC_RE, LEVELS, LEVEL_ORD, MAX_SUMMARY_CHARS, TAIL_RESERVE,
-    TIME_SCALE, dump_json, now, run_script,
+    TIME_SCALE, dump_json, fit_by_render, now, run_script,
 )
 from kb_common import parse_time_arg as _kb_parse_time_arg  # noqa: E402
 
@@ -815,7 +815,6 @@ class Group(object):
         self.sample = None
         self.origins = Counter()
         self.sources = Counter()
-        self.traces = set()
         self.records = []
 
     def add(self, rec):
@@ -832,8 +831,6 @@ class Group(object):
         self.origins[rec.origin] += 1
         if rec.source:
             self.sources[rec.source] += 1
-        if rec.trace and len(self.traces) < 50:
-            self.traces.add(rec.trace)
         if len(self.records) < 5:
             self.records.append(rec)
 
@@ -1088,13 +1085,6 @@ def _render_md(result, args, out, room, head_only=False):
     _render_tail(result, args, out)
 
 
-def group_size(grp):
-    """Сколько символов займёт группа в сводке — считаем по факту рендера."""
-    buf = io.StringIO()
-    render_groups([grp], buf.write, start=1)
-    return len(buf.getvalue())
-
-
 EARLY_KEPT = 2
 
 
@@ -1114,20 +1104,18 @@ def fit_groups(groups, room, early=EARLY_KEPT):
     """
     if not groups:
         return []
-    sizes = [group_size(g) for g in groups]
     earliest = sorted((i for i, g in enumerate(groups) if g.first is not None),
                       key=lambda i: (groups[i].first, i))[:early]
     order = [0]
     order += [i for i in earliest if i not in order]
     order += [i for i in range(len(groups)) if i not in order]
 
-    chosen = []
-    used = 0
-    for i in order:
-        if used + sizes[i] > room and chosen:
-            continue
-        chosen.append(i)
-        used += sizes[i]
+    def render_item(item, write):
+        idx, grp = item
+        render_groups([grp], write, numbers=[idx + 1])
+
+    shown, _hidden = fit_by_render([(i, groups[i]) for i in order], render_item, room)
+    chosen = [i for i, _grp in shown]
     return sorted(chosen)
 
 

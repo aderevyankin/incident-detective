@@ -32,6 +32,7 @@
 """
 
 import glob
+import html
 import json
 import os
 import re
@@ -68,6 +69,10 @@ FACTS_BLOCK_RE = re.compile(
     r'<script[^>]*id=["\']facts["\'][^>]*>(.*?)</script>', re.DOTALL)
 FILES_BLOCK_RE = re.compile(
     r'<script[^>]*id=["\']referenced-files["\'][^>]*>(.*?)</script>', re.DOTALL)
+CONTOUR_MD_ROW_RE = re.compile(r'^\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*$')
+CONTOUR_HTML_ROW_RE = re.compile(r'<tr>\s*<td>(.*?)</td>\s*<td>(.*?)</td>\s*<td>(.*?)</td>\s*</tr>',
+                                 re.DOTALL)
+CODE_RE = re.compile(r'`([^`]+)`|<code>(.*?)</code>')
 
 # как проверить число из facts против исходника: source_key -> регулярка с
 # одной захватывающей группой — числовым значением.
@@ -362,6 +367,97 @@ def check_presentation(failures):
     check_presentation_referenced_files(html, failures)
 
 
+# ---- 5. таблица трёх контуров --------------------------------------------
+
+def _strip_markup(text):
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'[*_`]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _contour_name(text):
+    text = _strip_markup(text)
+    text = re.sub(r'^\d+\.\s*', '', text)
+    return text
+
+
+def _scripts_from_cell(cell):
+    scripts = []
+    for match in CODE_RE.finditer(cell):
+        scripts.append((match.group(1) or match.group(2) or '').strip())
+    if scripts:
+        return scripts
+    return re.findall(r'\b[\w_]+\.py\b', cell)
+
+
+def _extract_md_contours(text):
+    rows = []
+    in_table = False
+    for line in text.splitlines():
+        if line.strip().startswith('|') and 'Контур' in line and (
+                'Скрипты' in line or 'Инструмент' in line):
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        if line.strip().startswith('|---'):
+            continue
+        if not line.strip().startswith('|'):
+            if rows:
+                break
+            continue
+        m = CONTOUR_MD_ROW_RE.match(line)
+        if not m:
+            continue
+        name = _contour_name(m.group(1))
+        if not name or name == 'Контур':
+            continue
+        rows.append((name, _strip_markup(m.group(2)), _scripts_from_cell(m.group(3))))
+        if len(rows) == 3:
+            break
+    return rows
+
+
+def _extract_html_contours(text):
+    rows = []
+    if 'Три контура' not in text:
+        return rows
+    for m in CONTOUR_HTML_ROW_RE.finditer(text):
+        name = _contour_name(m.group(1))
+        if name in ('База знаний', 'Логи', 'Код'):
+            rows.append((name, _strip_markup(m.group(2)), _scripts_from_cell(m.group(3))))
+            if len(rows) == 3:
+                break
+    return rows
+
+
+def check_contour_table_sync(failures):
+    canon_path = os.path.join(REPO, 'incident-detective', 'SKILL.md')
+    canon = _extract_md_contours(read(canon_path))
+    if len(canon) != 3:
+        failures.append('incident-detective/SKILL.md: не разобрана каноническая таблица трёх контуров')
+        return
+    expected = {name: scripts for name, _question, scripts in canon}
+    for rel, extractor in (
+            ('README.md', _extract_md_contours),
+            ('AI_CONTEXT.md', _extract_md_contours),
+            (os.path.join('docs', 'presentation.html'), _extract_html_contours)):
+        rows = extractor(read(os.path.join(REPO, rel)))
+        if len(rows) != 3:
+            failures.append('%s: не разобрана витринная таблица трёх контуров' % rel)
+            continue
+        actual = {name: scripts for name, _question, scripts in rows}
+        for name in sorted(expected):
+            if name not in actual:
+                failures.append('%s: в таблице нет контура %s' % (rel, name))
+                continue
+            if actual[name] != expected[name]:
+                failures.append('%s: контур %s: скрипты %s, канон %s'
+                                % (rel, name, ', '.join(actual[name]) or '—',
+                                   ', '.join(expected[name]) or '—'))
+
+
 def main(argv=None):
     failures = []
 
@@ -383,6 +479,7 @@ def main(argv=None):
     check_capabilities(readme_text, failures)
     check_structure(readme_text, failures)
     check_presentation(failures)
+    check_contour_table_sync(failures)
 
     if failures:
         sys.stderr.write('Документация разошлась с репозиторием:\n\n')

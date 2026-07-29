@@ -35,7 +35,7 @@ from code_hints import commits_in_window, is_git_repo  # noqa: E402
 from kb_common import (  # noqa: E402
     DEFAULT_MAX_LINES, MAX_SUMMARY_CHARS, TAIL_RESERVE, TIME_SCALE, apply_offset,
     dump_json, dump_overflow, estimate_clock_skew, fit_by_render, parse_offset_arg,
-    parse_time_arg, render_clock_findings, run_script, sort_key,
+    parse_source_arg, parse_time_arg, render_clock_findings, run_script, sort_key,
 )
 
 SPIKE_FACTOR = 3.0
@@ -219,9 +219,14 @@ KIND_MARK = {
 }
 
 
-def render_event(ev, write):
+def render_event(ev, write, previous_ts=None):
+    gap = ''
+    if previous_ts is not None:
+        delta = ev['ts'] - previous_ts
+        if delta >= timedelta(minutes=1):
+            gap = '  (+%s)' % pl.fmt_span(delta)
     write('**%s** %s %s\n' % (ev['ts'].strftime('%m-%d %H:%M:%S'),
-                              KIND_MARK.get(ev['kind'], '·'), ev['kind']))
+                              KIND_MARK.get(ev['kind'], '·'), ev['kind'] + gap))
     write('  %s\n' % ev['text'])
     line = []
     if ev.get('detail'):
@@ -287,29 +292,22 @@ def _render_md(events, out, window, offsets=None, clocks=None, budget=0):
     # потому считается заранее — иначе он вылезет за предел уже после неё
     tail = io.StringIO()
     _render_tail(events, tail.write)
-    shown, hidden = fit_by_render(events, render_event, budget,
+    timeline_items = []
+    prev = None
+    for ev in events:
+        timeline_items.append((ev, prev))
+        prev = ev['ts']
+
+    def render_timeline_item(item, write):
+        ev, previous_ts = item
+        render_event(ev, write, previous_ts=previous_ts)
+
+    shown_items, hidden = fit_by_render(timeline_items, render_timeline_item, budget,
                                   reserve=TAIL_RESERVE,
                                   used=len(out.getvalue()) + len(tail.getvalue()))
 
-    prev = None
-    for ev in shown:
-        gap = ''
-        if prev is not None:
-            delta = ev['ts'] - prev
-            if delta >= timedelta(minutes=1):
-                gap = '  (+%s)' % pl.fmt_span(delta)
-        prev = ev['ts']
-        mark = KIND_MARK.get(ev['kind'], '·')
-        w('**%s** %s %s%s\n' % (ev['ts'].strftime('%m-%d %H:%M:%S'), mark, ev['kind'], gap))
-        w('  %s\n' % ev['text'])
-        line = []
-        if ev.get('detail'):
-            line.append(ev['detail'])
-        if ev.get('source'):
-            line.append('источник: %s' % ev['source'])
-        if line:
-            w('  _%s_\n' % ' · '.join(line))
-        w('\n')
+    for ev, previous_ts in shown_items:
+        render_event(ev, w, previous_ts=previous_ts)
 
     if hidden:
         full = dump_overflow(overflow_events(events), 'timeline-events.json')
@@ -364,9 +362,7 @@ def main(argv=None):
     events = []
     labels = set()
     for item in args.parsed:
-        label, _, path = item.partition('=')
-        if not path:
-            label, path = os.path.basename(item), item
+        label, path = parse_source_arg(item)
         labels.add(label)
         # без перехвата отсутствующий файл давал сырую трассировку — в разборе
         # инцидента это выглядит как поломка скрипта, а не как опечатка в пути
@@ -389,9 +385,7 @@ def main(argv=None):
                              % (path, type(payload).__name__))
         events.extend(events_from_parsed(payload, label))
     for item in args.log:
-        label, _, path = item.partition('=')
-        if not path:
-            label, path = os.path.basename(item), item
+        label, path = parse_source_arg(item)
         labels.add(label)
         events.extend(events_from_log(path, args, label))
 

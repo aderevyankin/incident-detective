@@ -4,9 +4,8 @@ context: |
   Проект: incident-detective — скилл разбора багов и инцидентов на стендах.
 
   Целевая платформа: GigaCode CLI; разработка и прогоны идут на Qwen Code, при
-  расхождении приоритет у GigaCode. GigaCode — полная калька Qwen Code: те же имена
-  инструментов и файлы настроек, отличается только корневой каталог (.gigacode/
-  вместо .qwen/). Формат — Agent Skills: директория со SKILL.md (YAML-фронтматтер:
+  расхождении приоритет у GigaCode. Правило «GigaCode — калька Qwen Code» канонически
+  описано в AI_CONTEXT.md; здесь оно не дублируется. Формат — Agent Skills: директория со SKILL.md (YAML-фронтматтер:
   name, description, priority), плюс references/, scripts/, templates/. Ставится в
   ~/.gigacode/skills/ или .gigacode/skills/ (для Qwen Code — ~/.qwen/skills/ или
   .qwen/skills/). Скиллы читаются при старте CLI, model-invoked — решение о запуске

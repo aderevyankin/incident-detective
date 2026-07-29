@@ -14,7 +14,6 @@
 """
 
 import argparse
-import io
 import os
 import re
 import subprocess
@@ -27,7 +26,7 @@ from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
     EXC_RE, MAX_SUMMARY_CHARS, TIME_SCALE, dump_json, load_parsed, parse_time_arg,
-    run_script,
+    fit_by_render, run_script,
 )
 
 SKIP_DIRS = {'.git', 'node_modules', 'venv', '.venv', 'env', '__pycache__',
@@ -38,6 +37,7 @@ CODE_EXTS = ('.py', '.java', '.kt', '.scala', '.js', '.jsx', '.ts', '.tsx',
              '.hpp', '.sql', '.yaml', '.yml', '.json', '.xml', '.properties',
              '.conf', '.toml', '.ini', '.sh', '.tf')
 MAX_FILE_BYTES = 2 * 1024 * 1024
+REPO_FILE_CACHE = {}
 
 # ---- фреймы стектрейсов -------------------------------------------------
 
@@ -111,7 +111,7 @@ def walk_code(repo):
 
 def index_by_basename(repo):
     idx = {}
-    for path in walk_code(repo):
+    for path, _lines in repo_files(repo):
         idx.setdefault(os.path.basename(path), []).append(path)
     return idx
 
@@ -124,14 +124,23 @@ def read_lines(path):
         return []
 
 
+def repo_files(repo):
+    repo = os.path.abspath(repo)
+    cached = REPO_FILE_CACHE.get(repo)
+    if cached is not None:
+        return cached
+    files = [(path, read_lines(path)) for path in walk_code(repo)]
+    REPO_FILE_CACHE[repo] = files
+    return files
+
+
 def grep_repo(repo, phrases, limit=12):
     """Ищет литеральные фразы по файлам проекта."""
     if not phrases:
         return []
     lowered = [(p, p.lower()) for p in phrases]
     hits = []
-    for path in walk_code(repo):
-        lines = read_lines(path)
+    for path, lines in repo_files(repo):
         if not lines:
             continue
         for lineno, line in enumerate(lines, 1):
@@ -235,13 +244,18 @@ def commits_in_window(repo, start, end, limit=15):
     out = git(repo, 'log', '--since=%s' % since, '--until=%s' % until,
               '--date=iso-strict', '-n', str(limit),
               '--pretty=format:%h|%ad|%an|%s')
+    return parse_git_rows(out, commit_date_utc)
+
+
+def parse_git_rows(out, date_func=None):
     if not out:
         return []
     rows = []
     for line in out.split('\n'):
         parts = line.split('|', 3)
         if len(parts) == 4:
-            rows.append({'hash': parts[0], 'date': commit_date_utc(parts[1]),
+            date = date_func(parts[1]) if date_func else parts[1]
+            rows.append({'hash': parts[0], 'date': date,
                          'author': parts[2], 'subject': parts[3]})
     return rows
 
@@ -249,15 +263,7 @@ def commits_in_window(repo, start, end, limit=15):
 def file_history(runner, path, limit=3):
     out = runner.run('log', '-n', str(limit), '--date=short',
                      '--pretty=format:%h|%ad|%an|%s', '--', path)
-    if not out:
-        return []
-    rows = []
-    for line in out.split('\n'):
-        parts = line.split('|', 3)
-        if len(parts) == 4:
-            rows.append({'hash': parts[0], 'date': parts[1],
-                         'author': parts[2], 'subject': parts[3]})
-    return rows
+    return parse_git_rows(out)
 
 
 def blame_line(runner, path, lineno):
@@ -433,16 +439,7 @@ def limit_frames(frames, budget=MAX_SUMMARY_CHARS):
     """
     if budget <= 0:
         return list(frames), 0
-    used = 0
-    shown = []
-    for frame in frames:
-        buf = io.StringIO()
-        render_frame(frame, buf.write)
-        used += len(buf.getvalue())
-        if used > budget * 2 // 3 and shown:
-            break
-        shown.append(frame)
-    return shown, len(frames) - len(shown)
+    return fit_by_render(frames, render_frame, budget * 2 // 3)
 
 
 def render_md(data, out):
@@ -456,7 +453,7 @@ def render_md(data, out):
     frames = data['frames']
     if frames:
         w('## Фреймы стектрейсов\n\n')
-        shown, _hidden = limit_frames(frames)
+        shown = data.get('frames_shown', frames)
         for frame in shown:
             render_frame(frame, w)
         hidden = data.get('frames_hidden', 0)
@@ -568,13 +565,14 @@ def build(args):
         exceptions[exc] = found
 
     commits = commits_in_window(repo, first_ts, last_ts) if git_ok else []
-    _shown, frames_hidden = limit_frames(frames)
+    frames_shown, frames_hidden = limit_frames(frames)
 
     data = {
         'repo': repo,
         'git': git_ok,
         'first_ts': first_ts.strftime('%Y-%m-%d %H:%M:%S') if first_ts else None,
         'frames': frames,
+        'frames_shown': frames_shown,
         'frames_hidden': frames_hidden,
         'grep': hits,
         'phrases': phrases,

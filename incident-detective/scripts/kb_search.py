@@ -7,7 +7,6 @@
 """
 
 import argparse
-import io
 import os
 import subprocess
 import sys
@@ -19,7 +18,8 @@ from kb_common import require_python; require_python()  # noqa: E402
 from kb_common import (  # noqa: E402
     DISTINGUISHERS_SECTION, KIND_INCIDENT, KIND_SOURCE, MAX_SUMMARY_CHARS,
     OUTCOME_CONFIRMED, OUTCOME_REFUTED, OUTCOME_UNVERIFIED, SOURCE_STALE_DAYS,
-    VERDICT_LABELS, days_since, dump_json, kb_dir, kind_of, load_incidents_fast,
+    TAIL_RESERVE, VERDICT_LABELS, days_since, dump_json, fit_by_render, kb_dir,
+    kind_of, load_incidents_fast,
     load_parsed, mark_freshness, outcome_of, run_script, signature_similarity,
     signatures_from_parsed, source_freshness, tokenize,
 )
@@ -29,6 +29,11 @@ OUTCOME_LABELS = {
     OUTCOME_REFUTED: 'ОПРОВЕРГНУТА',
     OUTCOME_UNVERIFIED: 'не проверена',
 }
+
+
+class WriteProxy(object):
+    def __init__(self, write):
+        self.write = write
 
 FIELD_WEIGHTS = [
     ('title', 6.0),
@@ -211,27 +216,23 @@ def render_md(hits, out, query_desc, total, budget=MAX_SUMMARY_CHARS, repo=None,
                   'Инцидент, похоже, новый — после разбора имеет смысл его записать '
                   '(`kb_add.py`).\n' % (query_desc, total))
         return
-    # выдача едет в контекст агента: показываем сколько влезает, а не сколько нашлось
-    shown = hits
-    if budget > 0:
-        shown = []
-        used = 0
-        for hit in hits:
-            buf = io.StringIO()
-            render_hit(hit, buf, repo=repo)
-            used += len(buf.getvalue())
-            if used > budget and shown:
-                break
-            shown.append(hit)
-    out.write('# База знаний: найдено %d из %d\n\nЗапрос: %s\n\n'
-              % (len(hits), total, query_desc))
+    header = '# База знаний: найдено %d из %d\n\nЗапрос: %s\n\n' % (
+        len(hits), total, query_desc)
+    footer = ('Совпадение сигнатуры не доказывает ту же причину — сверь стенд, '
+              'сервис и условия перед выводом.\n')
+
+    def render_item(hit, write):
+        render_hit(hit, WriteProxy(write), repo=repo)
+
+    shown, hidden = fit_by_render(hits, render_item, budget, reserve=TAIL_RESERVE,
+                                  used=len(header) + len(footer))
+    out.write(header)
     for hit in shown:
         render_hit(hit, out, repo=repo)
-    if len(shown) < len(hits):
+    if hidden:
         out.write('_Показано %d записей из %d — выдача ограничена по объёму. '
                   'Полный список: `--format json`._\n\n' % (len(shown), len(hits)))
-    out.write('Совпадение сигнатуры не доказывает ту же причину — сверь стенд, '
-              'сервис и условия перед выводом.\n')
+    out.write(footer)
 
 
 def render_hit(hit, out, repo=None):

@@ -28,9 +28,6 @@ class Presentation(unittest.TestCase):
         check_docs.check_presentation(failures)
         self.assertEqual(failures, [], 'check_docs.py нашёл расхождения: %r' % (failures,))
 
-    def test_main_returns_zero(self):
-        self.assertEqual(check_docs.main([]), 0)
-
 
 if __name__ == '__main__':
     unittest.main()

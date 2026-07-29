@@ -30,7 +30,7 @@ import parse_logs as pl  # noqa: E402
 from kb_common import (  # noqa: E402
     DEFAULT_MAX_LINES, MAX_SUMMARY_CHARS, TAIL_RESERVE, TIME_SCALE, apply_offset,
     dump_json, dump_overflow, estimate_clock_skew, fit_by_render, parse_offset_arg,
-    parse_time_arg, render_clock_findings, run_script, sort_key,
+    parse_source_arg, parse_time_arg, render_clock_findings, run_script, sort_key,
 )
 
 
@@ -80,18 +80,6 @@ class Hop(object):
 # --------------------------------------------------------------------------
 # Чтение источников
 # --------------------------------------------------------------------------
-
-
-def parse_source_arg(item):
-    """'payment=logs/pay.log' -> ('payment', 'logs/pay.log')."""
-    label, sep, path = item.partition('=')
-    if not sep or not path:
-        path = item
-        label = os.path.basename(item.rstrip('/')) or item
-        for suffix in ('.log', '.txt', '.json', '.gz'):
-            if label.endswith(suffix):
-                label = label[:-len(suffix)]
-    return label, path
 
 
 def read_service(label, path, args):

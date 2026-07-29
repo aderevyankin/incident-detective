@@ -187,6 +187,18 @@ def fit_by_render(items, render, budget, reserve=0, used=0):
     return shown, len(items) - len(shown)
 
 
+def parse_source_arg(item):
+    """'payment=logs/pay.log' -> ('payment', 'logs/pay.log')."""
+    label, sep, path = item.partition('=')
+    if not sep or not path:
+        path = item
+        label = os.path.basename(item.rstrip('/')) or item
+        for suffix in ('.log', '.txt', '.json', '.gz'):
+            if label.endswith(suffix):
+                label = label[:-len(suffix)]
+    return label, path
+
+
 # --------------------------------------------------------------------------
 # Разбор аргументов времени (--since/--until)
 # --------------------------------------------------------------------------
