@@ -46,6 +46,38 @@ class FrontmatterRoundTrip(unittest.TestCase):
         back, _body = kb_common.parse_frontmatter(text)
         self.assertEqual(back['signatures'], sigs)
 
+    def test_mandatory_list_fields_survive_empty(self):
+        """`stands` и `tags` объявлены обязательными — пустыми они не выпадают.
+
+        Молчаливое отсутствие поля неотличимо от «его забыли заполнить»: по
+        такой записи не понять, что стенды неизвестны, а не потеряны.
+        """
+        meta = {'id': 'INC-2026-07-005', 'title': 'X', 'date': '2026-07-28',
+                'stands': [], 'tags': []}
+        text = kb_common.dump_frontmatter(meta)
+        self.assertIn('stands: []', text)
+        self.assertIn('tags: []', text)
+        back, _body = kb_common.parse_frontmatter(text)
+        self.assertEqual(back['stands'], [])
+        self.assertEqual(back['tags'], [])
+
+    def test_optional_list_fields_are_still_omitted_when_empty(self):
+        """Необязательные списки пустыми не пишутся: шум из пустых ключей не нужен."""
+        meta = {'id': 'INC-2026-07-006', 'title': 'X', 'date': '2026-07-28',
+                'files': [], 'commits': [], 'related': [], 'signatures': [],
+                'services': []}
+        text = kb_common.dump_frontmatter(meta)
+        for key in ('files', 'commits', 'related', 'signatures', 'services'):
+            self.assertNotIn('%s:' % key, text)
+
+    def test_record_without_mandatory_fields_reads_as_empty_lists(self):
+        """Запись прежних версий без `stands`/`tags` читается без ошибки."""
+        text = ('---\nid: INC-2025-12-001\ntitle: старая запись\n'
+                'date: 2025-12-01\n---\n\n## Симптомы\n\nтекст\n')
+        meta, _body = kb_common.parse_frontmatter(text)
+        self.assertEqual(meta.get('stands', []), [])
+        self.assertEqual(meta.get('tags', []), [])
+
     def test_field_with_special_characters_round_trips(self):
         meta = {'id': 'INC-2026-07-004', 'title': 'Ошибка: превышен лимит [503]',
                 'date': '2026-07-28'}

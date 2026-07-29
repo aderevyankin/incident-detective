@@ -5,6 +5,7 @@
 СНИЛС и телефон, тестовый JWT): проверка на форму, а не на настоящие данные.
 """
 
+import json
 import os
 import shutil
 import sys
@@ -196,6 +197,62 @@ class ScrubMatchesAcrossPaths(ScriptCase):
         self.assertIn(expected_clean, saved)
         self.assertNotIn('ivan@example.com', saved)
         self.assertNotIn(FAKE_CARD, saved)
+
+
+class ScrubCoversListFields(ScriptCase):
+    """Списочные поля фронтматтера чистятся так же, как тексты разделов.
+
+    Тег и стенд приходят от человека или из алерта, а не только из логов: адрес
+    в имени стенда и токен в теге попадали бы в базу дословно, хотя очистка
+    обещана «по всем полям записи».
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.kb = os.path.join(self.tmp, 'kb')
+
+    def _add(self, args):
+        code, out, err = self.run_script(
+            'kb_add.py', ['--title', 'проверка очистки списочных полей',
+                          '--kb', self.kb] + args)
+        self.assertEqual(code, 0, err)
+        names = [n for n in os.listdir(self.kb) if n.startswith('INC-')]
+        self.assertEqual(len(names), 1, 'ожидалась ровно одна запись: %s' % names)
+        with open(os.path.join(self.kb, names[0]), 'r', encoding='utf-8') as fh:
+            return out, fh.read()
+
+    def test_secret_in_tag_and_email_in_stand_are_masked(self):
+        out, saved = self._add(['--tags', 'token=abc123secret',
+                                '--stand', 'stage-ivan@example.com'])
+        self.assertNotIn('abc123secret', saved)
+        self.assertNotIn('ivan@example.com', saved)
+        self.assertIn('token=<redacted>', saved)
+        self.assertIn('<email>', saved)
+        self.assertIn('Очистка сработала', out)
+
+    def test_service_from_parsed_is_masked_and_counted(self):
+        parsed = os.path.join(self.tmp, 'parsed.json')
+        with open(parsed, 'w', encoding='utf-8') as fh:
+            json.dump({'signatures': [],
+                       'stats': {'services': {'payment-api?token=abc123secret': 4}}}, fh)
+        out, saved = self._add(['--from-parsed', parsed])
+        self.assertNotIn('abc123secret', saved)
+        self.assertIn('payment-api?token=<redacted>', saved)
+        # сводка за запуск общая: срабатывание на сервисе в неё попадает
+        self.assertIn('секрет ×1', out)
+
+    def test_scrub_of_list_fields_works_on_update_too(self):
+        self._add([])
+        code, _out, err = self.run_script(
+            'kb_add.py', ['--update', 'INC-2026-07-001', '--kb', self.kb,
+                          '--stand', 'stage-ivan@example.com', '--tags', 'token=abc123secret'])
+        self.assertEqual(code, 0, err)
+        names = [n for n in os.listdir(self.kb) if n.startswith('INC-')]
+        with open(os.path.join(self.kb, names[0]), 'r', encoding='utf-8') as fh:
+            saved = fh.read()
+        self.assertNotIn('abc123secret', saved)
+        self.assertNotIn('ivan@example.com', saved)
 
 
 if __name__ == '__main__':

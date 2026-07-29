@@ -127,6 +127,17 @@ class Add(ScriptCase):
         self.assertTrue(hits, 'записанная запись не находится поиском')
         self.assertEqual(hits[0]['id'], 'INC-2026-07-001')
 
+    def test_record_without_stand_and_tags_keeps_mandatory_fields(self):
+        """Запись без `--stand` и `--tags` всё равно содержит эти поля пустыми."""
+        out = self._add('Запись без стендов и тегов')
+        with open(self._record_path(out), 'r', encoding='utf-8') as fh:
+            text = fh.read()
+        self.assertIn('stands: []', text)
+        self.assertIn('tags: []', text)
+        # необязательные списки пустыми в запись не лезут
+        self.assertNotIn('files:', text)
+        self.assertNotIn('related:', text)
+
     def test_index_is_updated_after_write(self):
         self._add('Первая запись')
         with open(os.path.join(self.kb, 'index.json'), 'r', encoding='utf-8') as fh:
