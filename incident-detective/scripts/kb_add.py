@@ -217,9 +217,11 @@ def add_source(args, directory, entries, kb_source):
                              'У карты фиксированный набор полей: стенд, сервис, источник, '
                              'адрес, запрос, соответствие полей.' % name)
 
-    stands = split_csv(args.stand)
-    services = split_csv(args.service)
     scrub_counts = {}
+    # очистка идёт до сборки id: стенд и сервис попадают не только во фронтматтер,
+    # но и в идентификатор записи, и в имя файла — секрет в них утёк бы трижды
+    stands = [scrub(s, scrub_counts) for s in split_csv(args.stand)]
+    services = [scrub(s, scrub_counts) for s in split_csv(args.service)]
 
     target = None
     if args.update:

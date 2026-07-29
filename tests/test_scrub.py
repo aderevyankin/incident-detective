@@ -255,5 +255,59 @@ class ScrubCoversListFields(ScriptCase):
         self.assertNotIn('ivan@example.com', saved)
 
 
+class ScrubCoversSourceMapEntries(ScriptCase):
+    """Запись карты источников чистится теми же правилами, что разбор инцидента.
+
+    У карты стенд и сервис — не описание, а ключ: из них собирается id записи и
+    имя файла. Секрет в них утекал бы трижды, и вычистить его потом нельзя,
+    не переименовав запись.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='triage-tests-')
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.kb = os.path.join(self.tmp, 'kb')
+
+    def _names(self):
+        return [n for n in os.listdir(self.kb) if n.startswith('SRC-')]
+
+    def test_stand_and_service_are_masked_in_body_id_and_filename(self):
+        code, out, err = self.run_script(
+            'kb_add.py', ['--kb', self.kb, '--kind', 'source',
+                          '--stand', 'stage-ivan@example.com',
+                          '--service', 'payment-api?token=abc123secret',
+                          '--source', 'kind=mcp'])
+        self.assertEqual(code, 0, err)
+        names = self._names()
+        self.assertEqual(len(names), 1, 'ожидалась ровно одна запись: %s' % names)
+        self.assertNotIn('abc123', names[0], 'секрет попал в имя файла: %s' % names[0])
+        self.assertNotIn('ivan-example-com', names[0],
+                         'адрес попал в имя файла: %s' % names[0])
+        with open(os.path.join(self.kb, names[0]), 'r', encoding='utf-8') as fh:
+            saved = fh.read()
+        self.assertNotIn('abc123secret', saved)
+        self.assertNotIn('ivan@example.com', saved)
+        self.assertIn('<email>', saved)
+        self.assertIn('token=<redacted>', saved)
+        self.assertIn('Очистка сработала', out)
+        # id печатается в отчёт: по нему запись ищут дальше, и секрета там тоже нет
+        self.assertNotIn('abc123', out)
+
+    def test_scrub_of_source_entry_works_on_update_too(self):
+        code, _out, err = self.run_script(
+            'kb_add.py', ['--kb', self.kb, '--kind', 'source', '--stand', 'stage',
+                          '--service', 'payment-api', '--source', 'kind=mcp'])
+        self.assertEqual(code, 0, err)
+        entry_id = os.path.splitext(self._names()[0])[0]
+        code, _out, err = self.run_script(
+            'kb_add.py', ['--kb', self.kb, '--kind', 'source', '--update', entry_id,
+                          '--service', 'billing-api?token=abc123secret'])
+        self.assertEqual(code, 0, err)
+        with open(os.path.join(self.kb, self._names()[0]), 'r', encoding='utf-8') as fh:
+            saved = fh.read()
+        self.assertNotIn('abc123secret', saved)
+        self.assertIn('token=<redacted>', saved)
+
+
 if __name__ == '__main__':
     unittest.main()

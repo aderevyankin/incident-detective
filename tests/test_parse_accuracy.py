@@ -141,6 +141,22 @@ class Output(ScriptCase):
                              % (i * 5 + k, chr(ord('a') + i)))
         return write(os.path.join(tmp, 'app.log'), '\n'.join(lines) + '\n')
 
+    def _early_rare_log_with_info(self, tmp):
+        """То же, плюс три INFO-шаблона: они уходят в раздел «Прочие сообщения».
+
+        Раздел нумеруется отдельно от проблемного, поэтому именно здесь видно,
+        совпадает ли номер в сводке с номером группы для `--context`.
+        """
+        lines = ['2026-07-28 09:00:00 ERROR редкий ранний сбой ядра']
+        for i in range(8):
+            for k in range(5):
+                lines.append('2026-07-28 12:%02d:00 ERROR частый поздний сбой вида %s'
+                             % (i * 5 + k, chr(ord('a') + i)))
+        for j, name in enumerate(('альфа', 'бета', 'гамма')):
+            for k in range(3 - j):     # частоты убывают, порядок в разделе предсказуем
+                lines.append('2026-07-28 12:30:%02d INFO обычное событие %s' % (k, name))
+        return write(os.path.join(tmp, 'app.log'), '\n'.join(lines) + '\n')
+
     def test_json_is_not_cut_by_top(self):
         tmp = self.tmpdir()
         path = self._many_groups(tmp, 15)
@@ -201,6 +217,47 @@ class Output(ScriptCase):
         self.assertEqual(code, 0, err)
         self.assertIn('редкий ранний сбой', ctx,
                       '`--context %d` показал не ту группу:\n%s' % (number, ctx))
+
+    @staticmethod
+    def _numbered_templates(out):
+        """Пары (номер, шаблон) для всех показанных в сводке групп."""
+        pairs = []
+        number = None
+        for line in out.split('\n'):
+            if line.startswith('**#'):
+                number = int(line[3:line.index(' ')])
+            elif number is not None and line.startswith('`'):
+                pairs.append((number, line.strip('`')))
+                number = None
+        return pairs
+
+    def test_numbers_stay_unique_when_info_section_is_shown(self):
+        """Раздел «Прочие сообщения» не переиспользует номера проблемных групп."""
+        tmp = self.tmpdir()
+        path = self._early_rare_log_with_info(tmp)
+        code, out, err = self.run_script(
+            'parse_logs.py', [path, '--max-chars', '2900', '--show-info'])
+        self.assertEqual(code, 0, err)
+        numbers = [n for n, _ in self._numbered_templates(out)]
+        self.assertTrue(numbers, 'сводка не показала ни одной группы:\n%s' % out)
+        self.assertEqual(len(numbers), len(set(numbers)),
+                         'один номер выдан двум группам: %s\n%s' % (numbers, out))
+
+    def test_every_shown_number_points_at_its_own_group(self):
+        """Каждый номер из сводки ведёт `--context` ровно к своему шаблону."""
+        tmp = self.tmpdir()
+        path = self._early_rare_log_with_info(tmp)
+        code, out, err = self.run_script(
+            'parse_logs.py', [path, '--max-chars', '2900', '--show-info'])
+        self.assertEqual(code, 0, err)
+        pairs = self._numbered_templates(out)
+        self.assertTrue(pairs, 'сводка не показала ни одной группы:\n%s' % out)
+        for number, template in pairs:
+            code, ctx, err = self.run_script('parse_logs.py', [path, '--context', str(number)])
+            self.assertEqual(code, 0, err)
+            self.assertIn('`%s`' % template, ctx,
+                          '`--context %d` показал не ту группу: в сводке под этим '
+                          'номером %r\n%s' % (number, template, ctx))
 
 
 class JsonRoundTrip(ScriptCase):

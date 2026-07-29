@@ -1057,7 +1057,11 @@ def _render_md(result, args, out, room, head_only=False):
 
     if others and args.show_info:
         w('## Прочие сообщения (топ 5)\n\n')
-        render_groups(others[:5], w, start=shown + 1)
+        # не `shown + 1`: проблемные группы после усечения показаны не подряд, и
+        # счёт по числу показанных строк выдал бы номера уже показанных групп.
+        # `ordered` держит все WARN+ впереди прочих, поэтому номер прочей группы
+        # в общем порядке — её место после всех проблемных
+        render_groups(others[:5], w, start=len(problems) + 1)
 
     _render_tail(result, args, out)
 
