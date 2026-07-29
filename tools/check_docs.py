@@ -502,6 +502,20 @@ def check_closing_order(failures):
     elif 'шага 8' not in step9 and 'шаг 8' not in step9:
         failures.append('%s: шаг 9 не называет условие входа — пройденный шаг 8' % rel)
 
+    step6 = _skill_section(text, 'Шаг 6.')
+    if step6 is None:
+        failures.append('%s: не найден шаг 6' % rel)
+    elif 'считаются предложением' not in step6.lower():
+        failures.append('%s: шаг 6 не называет, что предложением не считается' % rel)
+
+    scripts = os.path.join(REPO, 'incident-detective', 'scripts')
+    triage_src = read(os.path.join(scripts, 'triage.py'))
+    if 'render_kb_reminder' not in triage_src:
+        failures.append('triage.py: в хвосте сводки нет напоминания о пополнении базы')
+    hints_src = read(os.path.join(scripts, 'code_hints.py'))
+    if 'Правки предлагай только после' in hints_src:
+        failures.append('code_hints.py: подсказка снова читается как запрет предлагать фикс')
+
     walk = read(os.path.join(REPO, 'docs', 'walkthrough.md'))
     kb_at = walk.find('\n## Запись в базу знаний')
     next_at = walk.find('\n## Предложение следующего шага')
