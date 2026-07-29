@@ -458,6 +458,59 @@ def check_contour_table_sync(failures):
                                    ', '.join(expected[name]) or '—'))
 
 
+def _skill_section(text, title):
+    """Текст раздела SKILL.md от его заголовка до следующего заголовка того же уровня."""
+    start = text.find('\n## ' + title)
+    if start < 0:
+        return None
+    rest = text[start + 1:]
+    end = rest.find('\n## ', 1)
+    return rest if end < 0 else rest[:end]
+
+
+def check_closing_order(failures):
+    """Порядок завершения разбора и повод включиться — инварианты формулировок.
+
+    Прогон не проверяет поведение модели, но проверяет, что инструкции, которые
+    это поведение задают, из канона не исчезли: шаг 7 перестал отсылать в шаг 9
+    в обход шага 8 ровно потому, что такая отсылка там однажды была.
+    """
+    rel = os.path.join('incident-detective', 'SKILL.md')
+    text = read(os.path.join(REPO, rel))
+
+    trigger = _skill_section(text, 'Когда включаться')
+    if trigger is None:
+        failures.append('%s: не найден раздел «Когда включаться»' % rel)
+    else:
+        if 'прямая просьба' not in trigger.lower():
+            failures.append('%s: в поводах включиться нет прямой просьбы использовать скилл' % rel)
+        if 'parse_logs.py' not in trigger or 'triage.py' not in trigger:
+            failures.append('%s: не сказано, что логи открываются только через скрипты' % rel)
+
+    step7 = _skill_section(text, 'Шаг 7.')
+    if step7 is None:
+        failures.append('%s: не найден шаг 7' % rel)
+    else:
+        if 'Запись в базу' not in step7:
+            failures.append('%s: в перечне пунктов вывода нет строки «Запись в базу»' % rel)
+        if re.search(r'разбор идёт в шаг 9', step7):
+            failures.append('%s: шаг 7 отсылает в шаг 9 в обход шага 8' % rel)
+
+    step9 = _skill_section(text, 'Шаг 9.')
+    if step9 is None:
+        failures.append('%s: не найден шаг 9' % rel)
+    elif 'шага 8' not in step9 and 'шаг 8' not in step9:
+        failures.append('%s: шаг 9 не называет условие входа — пройденный шаг 8' % rel)
+
+    walk = read(os.path.join(REPO, 'docs', 'walkthrough.md'))
+    kb_at = walk.find('\n## Запись в базу знаний')
+    next_at = walk.find('\n## Предложение следующего шага')
+    if kb_at < 0 or next_at < 0:
+        failures.append('docs/walkthrough.md: не найдены разделы записи в базу и следующего шага')
+    elif kb_at > next_at:
+        failures.append('docs/walkthrough.md: следующий шаг показан раньше записи в базу')
+
+
 def main(argv=None):
     failures = []
 
@@ -480,6 +533,7 @@ def main(argv=None):
     check_structure(readme_text, failures)
     check_presentation(failures)
     check_contour_table_sync(failures)
+    check_closing_order(failures)
 
     if failures:
         sys.stderr.write('Документация разошлась с репозиторием:\n\n')
