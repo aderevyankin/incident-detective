@@ -131,6 +131,30 @@
     letter-spacing: 0.06em;
     vertical-align: 0.1em;
   }
+  /* Слайд-снимок: заголовок и одна строка описания сверху, дальше картинка занимает
+     всю оставшуюся высоту. object-fit: contain — снимки сняты в разных разрешениях,
+     кадрировать их нельзя, иначе с краёв уезжает текст терминала. */
+  /* Поля у слайда-снимка уже обычных: снимок терминала читается только целиком,
+     и каждый лишний процент ширины — это разница между «видно строку лога» и «не видно». */
+  .shot { justify-content: flex-start; gap: 0.5em; padding: 3.5vh 3vw; }
+  .shot h2 { margin-bottom: 0.1em; font-size: clamp(1.3rem, 2.4vw, 1.8rem); }
+  .shot .caption {
+    color: var(--fg-secondary);
+    font-size: clamp(0.9rem, 1.5vw, 1.05rem);
+    margin: 0;
+    max-width: 70em;
+  }
+  .shot img {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    object-fit: contain;
+    object-position: top center;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #000;
+  }
+
   .counter {
     position: fixed;
     bottom: 1.2vh;
@@ -168,10 +192,6 @@
     position: relative;
     z-index: 1;
   }
-  .bg-stroke { fill: none; stroke: var(--fg-secondary); stroke-width: 2; }
-  .bg-node { fill: var(--fg-secondary); stroke: none; }
-  .bg-tick { stroke: var(--fg-secondary); stroke-width: 2; }
-  .bg-tick-mark { stroke: var(--fg-secondary); stroke-width: 3; }
   .bg-logline { fill: var(--fg-secondary); opacity: 0.35; }
   .bg-logline-error { fill: var(--accent-2); opacity: 1.6; }
   .bg-logtext {
@@ -260,264 +280,59 @@
       инцидент начинался не с нуля.</p>
   </section>
 
-  <section class="slide" data-title="Как проходит разбор">
-    <svg class="slide-bg" aria-hidden="true"><use href="#bg-chain" width="100%" height="100%"></use></svg>
-    <h2>Как проходит разбор</h2>
-    <ol class="chain">
-      <li><strong>План работ</strong> — первым действием, до любых команд: ход разбора виден
-        пользователю, и его можно остановить.</li>
-      <li><strong>Предпроверка окружения</strong> и первый взгляд в базу знаний словами
-        пользователя. <span class="tag">развилка</span> есть пригодный
-        <code>python3</code> — полный разбор; нет — ограниченный режим объявляется вслух.</li>
-      <li><strong>Карточка инцидента</strong> и карта источников логов.
-        <span class="tag">развилка</span> источник этого стенда уже записан — заходим
-        прямо туда; не записан — обследуем каналы и записываем результат, в том числе
-        отрицательный.</li>
-      <li><strong>Логи окном</strong> вокруг времени инцидента, а не файл целиком.</li>
-      <li><strong>Разбор одной командой</strong> — <code>triage.py</code>: логи → база знаний
-        по сигнатурам → код → уверенность.</li>
-      <li><strong>Чтение найденных мест в коде</strong> — механика падения, а не совпадение
-        строки.</li>
-      <li><strong>Вывод.</strong> <span class="tag">развилка</span> уровень уверенности
-        задаёт формулировку вывода и ведущий следующий шаг.</li>
-      <li><strong>Пополнение базы знаний</strong> — разбор оседает записью, а не остаётся в
-        переписке.</li>
-      <li><strong>Следующий шаг</strong>: правки, баг или задача на доисследование.</li>
-    </ol>
-    <p class="hint">Порядком управляет не привычка делать шаг за шагом, а бюджет: до вывода
-      причины — <strong>пять вызовов инструментов</strong> (таблица шагов в
-      <code>SKILL.md</code>). Независимые контуры поэтому сведены в один запуск, а не в три
-      прохода модели.</p>
+  <section class="slide shot" data-title="Скилл включается сам">
+    <h2>Скилл включается сам</h2>
+    <p class="caption">GigaCode запущен в проекте. Пользователь пишет обычную фразу — «у нас инцидент, логи @logs/». Явной команды нет: агент сам сопоставляет её с описанием скилла и включает <code>incident-detective</code>.</p>
+    <img src="screens/1.png" alt="Скилл включается сам">
   </section>
 
-  <section class="slide" data-title="Три контура и сигнатура">
-    <svg class="slide-bg" aria-hidden="true"><use href="#bg-contours" width="100%" height="100%"></use></svg>
-    <h2>Три контура и что их связывает</h2>
-    <!-- Таблица витринная; канон — таблица в incident-detective/SKILL.md, правится сначала он.
-         Синхронность состава скриптов проверяет tools/check_docs.py. -->
-    <table>
-      <tr><th>Контур</th><th>Вопрос</th><th>Инструмент</th></tr>
-      <tr><td>База знаний</td><td>Мы это уже видели? Откуда брать логи?</td><td><code>kb_search.py</code>, <code>kb_add.py</code></td></tr>
-      <tr><td>Логи</td><td>Что происходило на самом деле?</td><td><code>parse_logs.py</code>, <code>timeline.py</code>, <code>trace.py</code></td></tr>
-      <tr><td>Код</td><td>Где ломается и из-за чего?</td><td><code>code_hints.py</code></td></tr>
-    </table>
-    <p>Контуры работают независимо, не по очереди. Их связывает <strong>сигнатура</strong>,
-      устойчивый отпечаток ошибки: класс исключения, HTTP-статус, шаблон сообщения. Логи её
-      порождают, база знаний по ней ищет, код по ней локализуется, новая запись базы её
-      сохраняет.</p>
-    <p class="hint">Пример дальше по показу: сигнатура <code>ConnectionTimeoutError</code>
-      связывает лог, запись базы и оценку уверенности одного и того же разбора.</p>
+  <section class="slide shot" data-title="План работ — первым действием">
+    <h2>План работ — первым действием</h2>
+    <p class="caption">До любых команд агент выкладывает план разбора: предпроверка окружения, карточка инцидента, выгрузка логов окном, разбор, чтение кода, вывод, запись в базу знаний, следующий шаг. Ход разбора виден и его можно остановить.</p>
+    <img src="screens/2.png" alt="План работ — первым действием">
   </section>
 
-  <section class="slide" data-title="Почему выводу можно верить">
-    <svg class="slide-bg" aria-hidden="true"><use href="#bg-confidence" width="100%" height="100%"></use></svg>
-    <h2>Почему выводу можно верить</h2>
-    <p>Уровень уверенности считает <strong>скрипт</strong> — по числу и весу подтвердивших
-      контуров, а не модель по ощущению от собственного текста. Отсюда и формулировка
-      вывода, и то, что предлагается делать дальше.</p>
-    <table>
-      <tr><th>Уровень</th><th>Порог</th><th>Формулировка вывода</th></tr>
-      <tr><td>подтверждено данными</td><td>≥ 0.70</td><td>причина — установленный факт, с доказательствами</td></tr>
-      <tr><td>вероятная причина</td><td>≥ 0.40</td><td>«вероятно», и что не хватает для подтверждения</td></tr>
-      <tr><td>гипотеза</td><td>&lt; 0.40</td><td>«предполагаю», и что нужно проверить</td></tr>
-    </table>
-    <p>Ни один контур в одиночку не даёт «подтверждено», даже стопроцентное совпадение сигнатуры
-      с записью базы знаний. Одна опора причину не доказывает, а неподтверждённый исход старой
-      записи снижает вклад ещё раз.</p>
-    <p>Если данных не хватает для железного вывода, гипотеза так и остаётся гипотезой: никто
-      не выдаёт её за установленный факт. Дальше по показу разбор, где сигнатура совпала с
-      базой знаний один в один, а итоговая уверенность всё равно 0.39, «гипотеза».</p>
+  <section class="slide shot" data-title="Разбор оседает записью">
+    <h2>Разбор оседает записью</h2>
+    <p class="caption">База знаний не была закреплена — агент называет место, куда пишет, и закрепляет его. Скрипт создаёт запись <code>INC-2026-07-001</code> и пересобирает индекс: слева работа агента, справа те же файлы в терминале.</p>
+    <img src="screens/3.png" alt="Разбор оседает записью">
   </section>
 
-  <section class="slide" data-title="Отличие от вопроса модели">
-    <h2>Чем это отличается от вопроса модели напрямую</h2>
-    <div class="cols">
-      <div>
-        <p><strong>Модель без данных</strong></p>
-        <ul>
-          <li>отвечает по похожести на то, что видела при обучении;</li>
-          <li>формулирует уверенно вне зависимости от того, сколько на самом деле подтверждено;</li>
-          <li>сослаться не на что: источника у ответа нет.</li>
-        </ul>
-      </div>
-      <div>
-        <p><strong>incident-detective</strong></p>
-        <ul>
-          <li>вывод опирается на реально разобранные логи, найденную запись базы, строку кода;</li>
-          <li>уровень уверенности считается по числу и весу подтвердивших контуров, а не по тону;</li>
-          <li>каждое утверждение сопровождается источником: файл, время, частота, запись базы.</li>
-        </ul>
-      </div>
-    </div>
-    <p>Дело не в длине ответа. За уверенным тоном модели без данных стоит совпадение с обучающей
-      выборкой; за выводом incident-detective стоит конкретный разбор, который можно
-      перепроверить.</p>
+  <section class="slide shot" data-title="Вывод с доказательствами">
+    <h2>Вывод с доказательствами</h2>
+    <p class="caption">Причина названа вместе с источниками: метрики (<code>pg_pool_active = 49/50</code>), строка кода <code>OrderCheckoutService.java:80-84</code>, нарушенный инвариант. Справа — карточка базы знаний: симптомы, диагностика, причина, решение, отличительные признаки.</p>
+    <img src="screens/4.png" alt="Вывод с доказательствами">
   </section>
 
-  <section class="slide" data-title="Пример: разбор в диалоге">
+  <section class="slide shot" data-title="Разбор закрыт и записан">
+    <h2>Разбор закрыт и записан</h2>
+    <p class="caption">Все пункты плана закрыты, разбор завершён. Итог не растворяется в переписке: запись <code>INC-2026-07-001</code> лежит в базе знаний, и следующий такой же инцидент начнётся не с чистого листа.</p>
+    <img src="screens/5.png" alt="Разбор закрыт и записан">
+  </section>
+
+  <section class="slide shot" data-title="Сколько это стоит">
+    <h2>Сколько это стоит</h2>
+    <p class="caption">Весь разбор — 2 мин 30 с и 23 запроса к модели, 54.5% входных токенов обслужено из кэша. Дальше — тот же скилл запускается на другом проекте, с другим стеком и другим форматом логов.</p>
+    <img src="screens/6.png" alt="Сколько это стоит">
+  </section>
+
+  <section class="slide shot" data-title="Другой проект, тот же скилл">
+    <h2>Другой проект, тот же скилл</h2>
+    <p class="caption">Java-сервис, лог с <code>DatabaseConnectionException</code>. Скилл разбирает трассу вызовов до места падения — <code>MainCtrl.postJson()</code> → <code>MainService.run()</code> → <code>AbstractDatabase.open()</code> — и называет механику: соединение открывается, не закрыв предыдущее.</p>
+    <img src="screens/7.png" alt="Другой проект, тот же скилл">
+  </section>
+
+  <section class="slide shot" data-title="От причины к правке">
+    <h2>От причины к правке</h2>
+    <p class="caption">Локализация в коде таблицей «файл — строка — роль», затем предложенный патч: привязать жизнь соединения к жизненному циклу <code>Mono</code> через <code>defer()</code> + <code>doFinally()</code>. Правка предложена, но не применена молча — сначала объяснена причина.</p>
+    <img src="screens/8.png" alt="От причины к правке">
+  </section>
+
+  <section class="slide" data-title="Команда">
     <svg class="slide-bg" aria-hidden="true"><use href="#bg-loglines" width="100%" height="100%"></use></svg>
-    <h2>Пример 1. Разбор в диалоге, на фикстурах репозитория</h2>
-    <p class="hint">Воспроизводимо: <code>tests/fixtures/logs/payment.log</code> +
-      <code>tests/fixtures/kb/</code>, синтетические данные.</p>
-    <pre>python3 incident-detective/scripts/triage.py tests/fixtures/logs/payment.log \
-    --kb tests/fixtures/kb --repo tests/fixtures \
-    --stand stage --service payment-api --query "connection timeout"</pre>
-    <pre>## Сводка логов
-- Записей: 4 · Период: 16:20:02 — 16:21:12 (1 мин) · Уровни: INFO=3 ERROR=1
-#1 · 1× · ERROR
-`ConnectionTimeoutError: timed out waiting for connection from pool after &lt;n&gt; ms`
-
-## База знаний: найдено 1 из 3
-### INC-2026-07-001 — payment-api отдаёт таймауты: исчерпан пул соединений к базе
-релевантность: 46.3 — сигнатура 100%: ConnectionTimeoutError
-Причина: размер пула (20) меньше числа параллельных обработчиков.
-
-## Уверенность в выводе: 0.39 — гипотеза
-| Контур | Оценка |
-|---|---|
-| Логи         | 0.55 — ошибка единичная, окно инцидента не очерчено |
-| Код          | 0.25 — стектрейсов нет, текст ошибки найден в 2 местах |
-| База знаний  | 0.60 — исход записи не проверен, вклад снижен |</pre>
-    <p>Сигнатура совпала с записью базы один в один, и всё равно вывод честно называется
-      гипотезой: единичная ошибка, стектрейса нет, исход прошлой записи не подтверждён.</p>
-  </section>
-
-  <section class="slide code-dense" data-title="Пример: автономный разбор от алерта">
-    <svg class="slide-bg" aria-hidden="true"><use href="#bg-loglines" width="100%" height="100%"></use></svg>
-    <h2>Пример 2. Тот же инцидент, но человека нет</h2>
-    <p class="hint">Алерт в 03:31, дежурный спит: обвязка запускает клиента в изолированной
-      среде и наутро читает файл. Прогон воспроизводится на фикстурах —
-      <code>docs/walkthrough.md</code>, «Автономный разбор».</p>
-    <div class="cols">
-      <div>
-        <p><strong>Вход — payload алерта; запуск — одна команда</strong></p>
-        <pre>python3 $SKILL_DIR/scripts/alert_to_incident.py \
-    --file tests/fixtures/alerts/alertmanager.json \
-    &gt; /tmp/run/incident.json
-
-INCIDENT_MODE=auto \
-python3 $SKILL_DIR/scripts/triage.py \
-    tests/fixtures/logs/payment.log \
-    --incident /tmp/run/incident.json \
-    --kb tests/fixtures/kb \
-    --repo /tmp/incident-demo-repo \
-    --out /tmp/run</pre>
-        <p class="hint">Ни одного вопроса не задано: стенд, сервис и окно ±15 минут вокруг
-          инцидента вышли из полей алерта; чего в алерте нет — попадает в
-          <code>missing</code>. <code>$SKILL_DIR</code> — директория скилла.</p>
-      </div>
-      <div>
-        <p><strong>Выход — <code>/tmp/run/report.json</code></strong></p>
-        <pre>{
-  "verdict": "гипотеза",
-  "confidence": 0.39,
-  "signature": "ConnectionTimeoutError",
-  "insufficient": false, "missing": [],
-  "evidence": [
-    {"contour": "logs", "count": 1,
-     "source": "payment.log"},
-    {"contour": "kb", "score": 51.83,
-     "source": "INC-2026-07-001"},
-    {"contour": "code",
-     "source": ".../src/payment/pool.py:11"}
-  ],
-  "next_step": {"kind": "task",
-    "why": "гипотеза не тянет ни на правки, ни на баг"}
-}</pre>
-        <p class="hint">Отчёт собирает скрипт, а не формулировка модели.</p>
-      </div>
-    </div>
-    <p>Каждый вопрос диалога заменён правилом вывода: источник логов берётся из карты
-      источников, запись в базу делается только по явной настройке, а следующий шаг
-      оформляется черновиком, без тикетов и правок. Если данных не хватило, вердикт —
-      <strong>«данных недостаточно»</strong> с перечнем недостающего, а не догадка,
-      которую ночью некому проверить.
-      <strong>Условие применения</strong>: режим включается там, где среда запуска
-      изолирована снаружи.</p>
-  </section>
-
-  <section class="slide" data-title="Что ещё внутри">
-    <h2>Что ещё внутри — и почему второй разбор дешевле первого</h2>
-    <div class="cols">
-      <div>
-        <p><strong>База знаний</strong> — разбор не растворяется в переписке: причина,
-          решение и сигнатуры оседают записью. Второй такой же инцидент начинается не с
-          чистого листа, а с готового ответа, который остаётся проверить.</p>
-        <p><strong>Карта источников логов</strong> — для пары «стенд + сервис» записывается,
-          откуда брались данные: источник, сработавший запрос, соответствие полей. Вместе с
-          отрицательным результатом, чтобы в пустой источник больше не ходить: перебор
-          каналов не повторяется на каждом разборе.</p>
-      </div>
-      <div>
-        <p><strong>Ограниченный режим</strong> — на стенде не оказалось пригодного
-          <code>python3</code>: разбор идёт вручную по инструкции, но честно объявлен, и
-          уровень вывода не поднимается выше гипотезы. Тихо неверный разбор хуже, чем
-          «не могу».</p>
-        <p><strong>Телеметрия контуров</strong> — в отчёте видно не только то, что нашлось,
-          но и какой контур пропущен и почему. Пробел в разборе виден сразу, а не всплывает
-          на разборе постмортема.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="slide" data-title="Свойства и границы">
-    <h2>Свойства и границы</h2>
-    <div class="cols">
-      <div>
-        <table>
-          <caption>Измерено: <code>python3 tools/bench.py</code></caption>
-          <tr><th>Замер</th><th>Бюджет</th></tr>
-          <tr><td><code>parse_logs.py</code> без фильтров</td><td>≥ 50 000 строк/с</td></tr>
-          <tr><td><code>parse_logs.py --level ERROR</code></td><td>≥ 150 000 строк/с</td></tr>
-          <tr><td><code>parse_logs.py --since/--until</code></td><td>≥ 150 000 строк/с</td></tr>
-          <tr><td>вся цепочка <code>triage.py</code></td><td>≤ 15 с</td></tr>
-        </table>
-        <p class="hint">Записи отсеиваются до разбора, не после: фильтр по уровню и окну
-          применяется прямо при выгрузке из лога. До вывода причины —
-          <strong>пять вызовов инструментов</strong> (таблица шагов, <code>SKILL.md</code>).
-          Сводка ограничена <strong>12&nbsp;000 символами</strong>
-          (<code>MAX_SUMMARY_CHARS</code> в
-          <code>incident-detective/scripts/kb_common.py</code>): она едет в контекст агента,
-          полный результат пишется в файл.</p>
-        <p class="hint">Всё работает локально: только стандартная библиотека Python 3.8+,
-          без сети и без внешних сервисов — скилл рассчитан на закрытый контур.</p>
-      </div>
-      <div>
-        <p><strong>Чего скилл не делает</strong></p>
-        <ul>
-          <li>Только диагностика: рестарты, деплои и правки конфигов на стендах — по явной просьбе.</li>
-          <li>Правки в код предлагает, но не применяет молча: сначала объясняет причину.</li>
-          <li>Тикет во внешнем трекере не заводит без подтверждения: сначала показывает текст.</li>
-          <li>Нет подходящего <code>python3</code> — не подбирает другой интерпретатор и не
-            пишет свой парсер, а объявляет ограниченный режим вслух.</li>
-          <li>В базу знаний, тикет и постмортем идут шаблоны и сигнатуры, не сырые дампы логов;
-            email, телефоны, номера карт и идентификаторы людей маскируются перед показом.</li>
-        </ul>
-      </div>
-    </div>
-    <p>Это осознанный выбор границы, а не недоделанная функциональность. В автономном режиме
-      подтверждать некому — и механизма подтверждения запуска команд у клиента там нет, это
-      измерено прогоном, а не предположено. Поэтому запрет действий держится на
-      <strong>изоляции среды запуска</strong>: sandbox, непривилегированный пользователь,
-      read-only монтирование, сужённый перечень MCP-серверов. Где изоляции нет — разбор идёт
-      диалогом.</p>
-  </section>
-
-  <section class="slide" data-title="Установка">
-    <h2>Установка</h2>
-    <pre>cp -R incident-detective ~/.gigacode/skills/incident-detective   # личный скилл
-cp -R incident-detective .gigacode/skills/incident-detective     # проектный: едет в git с командой</pre>
-    <ol>
-      <li>Скопировать директорию <code>incident-detective/</code> — установщика нет.</li>
-      <li>Перезапустить CLI: скиллы читаются при старте.</li>
-      <li>Проверить, что скилл виден: <code>/skills</code>.</li>
-      <li>Описать инцидент своими словами — скилл включается сам.</li>
-    </ol>
-    <p>Либо ссылку на репозиторий дают своему AI-ассистенту, и он проделывает то же самое.
-      Единственное требование окружения: <code>python3</code> 3.8 или новее, только
-      стандартная библиотека.</p>
-    <p class="hint">Другие платформы формата Agent Skills, обновление поверх существующей
-      установки и подробности — <code>README.md</code> в корне репозитория.</p>
+    <p class="kicker">Спасибо за внимание</p>
+    <h1>Команда Барабульки</h1>
+    <p class="subtitle">Стол 96</p>
   </section>
 
 </div>
@@ -527,41 +342,6 @@ cp -R incident-detective .gigacode/skills/incident-detective     # проект�
 <div class="nav-hit right" id="navRight" aria-hidden="true"></div>
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
-  <symbol id="bg-chain" viewBox="0 0 800 200" preserveAspectRatio="xMidYMid slice">
-    <path class="bg-stroke" d="M40,60 L130,140 L220,60 L310,140 L400,60 L490,140 L580,60 L670,140 L760,60"></path>
-    <circle class="bg-node" cx="40" cy="60" r="6"></circle>
-    <circle class="bg-node" cx="130" cy="140" r="6"></circle>
-    <circle class="bg-node" cx="220" cy="60" r="6"></circle>
-    <circle class="bg-node" cx="310" cy="140" r="6"></circle>
-    <circle class="bg-node" cx="400" cy="60" r="6"></circle>
-    <circle class="bg-node" cx="490" cy="140" r="6"></circle>
-    <circle class="bg-node" cx="580" cy="60" r="6"></circle>
-    <circle class="bg-node" cx="670" cy="140" r="6"></circle>
-    <circle class="bg-node" cx="760" cy="60" r="6"></circle>
-  </symbol>
-
-  <symbol id="bg-contours" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice">
-    <path class="bg-stroke" d="M100,100 C250,150 300,250 400,300"></path>
-    <path class="bg-stroke" d="M700,120 C550,180 450,250 400,300"></path>
-    <path class="bg-stroke" d="M400,550 C400,450 400,380 400,300"></path>
-    <circle class="bg-node" cx="400" cy="300" r="8"></circle>
-  </symbol>
-
-  <symbol id="bg-confidence" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice">
-    <line class="bg-tick" x1="40" y1="300" x2="760" y2="300"></line>
-    <line class="bg-tick" x1="40" y1="285" x2="40" y2="315"></line>
-    <line class="bg-tick" x1="112" y1="285" x2="112" y2="315"></line>
-    <line class="bg-tick" x1="184" y1="285" x2="184" y2="315"></line>
-    <line class="bg-tick" x1="256" y1="285" x2="256" y2="315"></line>
-    <line class="bg-tick-mark" x1="328" y1="270" x2="328" y2="330"></line>
-    <line class="bg-tick" x1="400" y1="285" x2="400" y2="315"></line>
-    <line class="bg-tick" x1="472" y1="285" x2="472" y2="315"></line>
-    <line class="bg-tick-mark" x1="544" y1="270" x2="544" y2="330"></line>
-    <line class="bg-tick" x1="616" y1="285" x2="616" y2="315"></line>
-    <line class="bg-tick" x1="688" y1="285" x2="688" y2="315"></line>
-    <line class="bg-tick" x1="760" y1="285" x2="760" y2="315"></line>
-  </symbol>
-
   <symbol id="bg-loglines" viewBox="0 0 900 400" preserveAspectRatio="xMidYMid slice">
     <text class="bg-logtext bg-logline" x="16" y="20">{"timestamp": "2026-07-28 16:20:02", "level": "info", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "charge started, amount 1500"}</text>
     <text class="bg-logtext bg-logline-error" x="16" y="44">{"timestamp": "2026-07-28 16:20:03", "level": "error", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms"}</text>
@@ -582,44 +362,15 @@ cp -R incident-detective .gigacode/skills/incident-detective     # проект�
   </symbol>
 </svg>
 
+<!-- Числовых утверждений, которые надо сверять с исходниками, на слайдах больше нет:
+     показ построен на снимках реального прогона, и все числа на них принадлежат
+     самому прогону, а не коду репозитория. Блок оставлен пустым, чтобы проверка
+     tools/check_docs.py продолжала находить его на месте. -->
 <script type="application/json" id="facts">
-[
-  {"claim": "parse_logs.py без фильтров — бюджет ≥ 50 000 строк/с",
-   "source_file": "tools/bench.py", "source_key": "parse_logs", "value": 50000},
-  {"claim": "parse_logs.py --level ERROR — бюджет ≥ 150 000 строк/с",
-   "source_file": "tools/bench.py", "source_key": "parse_logs_level", "value": 150000},
-  {"claim": "parse_logs.py --since/--until — бюджет ≥ 150 000 строк/с",
-   "source_file": "tools/bench.py", "source_key": "parse_logs_window", "value": 150000},
-  {"claim": "вся цепочка triage.py — бюджет ≤ 15 с",
-   "source_file": "tools/bench.py", "source_key": "triage", "value": 15.0},
-  {"claim": "предел сводки — 12 000 символов",
-   "source_file": "incident-detective/scripts/kb_common.py", "source_key": "MAX_SUMMARY_CHARS", "value": 12000},
-  {"claim": "до вывода причины — пять вызовов инструментов",
-   "source_file": "incident-detective/SKILL.md", "source_key": "пять вызовов инструментов", "value": 5},
-  {"claim": "подтверждено данными — порог 0.70",
-   "source_file": "incident-detective/SKILL.md", "source_key": "confirmed_threshold", "value": 0.70},
-  {"claim": "вероятная причина — порог 0.40",
-   "source_file": "incident-detective/SKILL.md", "source_key": "probable_threshold", "value": 0.40},
-  {"claim": "окно разбора вокруг времени инцидента — ±15 минут",
-   "source_file": "incident-detective/scripts/alert_to_incident.py",
-   "source_key": "DEFAULT_WINDOW_MIN", "value": 15}
-]
+[]
 </script>
 <script type="application/json" id="referenced-files">
-[
-  "tools/bench.py",
-  "incident-detective/SKILL.md",
-  "incident-detective/scripts/kb_common.py",
-  "incident-detective/scripts/triage.py",
-  "incident-detective/scripts/alert_to_incident.py",
-  "incident-detective/references/aiops.md",
-  "incident-detective/templates/aiops-report.md",
-  "tests/fixtures/alerts/alertmanager.json",
-  "docs/walkthrough.md",
-  "tests/fixtures/logs/payment.log",
-  "tests/fixtures/kb/INC-2026-07-001-payment-pool-exhausted.md",
-  "README.md"
-]
+[]
 </script>
 
 <script>

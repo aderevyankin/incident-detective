@@ -439,10 +439,12 @@ def check_contour_table_sync(failures):
         failures.append('incident-detective/SKILL.md: не разобрана каноническая таблица трёх контуров')
         return
     expected = {name: scripts for name, _question, scripts in canon}
+    # docs/presentation.html из сверки исключена намеренно: показ построен на снимках
+    # реального прогона, витринной таблицы контуров в нём больше нет. Разбор HTML
+    # оставлен на случай, если таблица вернётся на слайд.
     for rel, extractor in (
             ('README.md', _extract_md_contours),
-            ('AI_CONTEXT.md', _extract_md_contours),
-            (os.path.join('docs', 'presentation.html'), _extract_html_contours)):
+            ('AI_CONTEXT.md', _extract_md_contours)):
         rows = extractor(read(os.path.join(REPO, rel)))
         if len(rows) != 3:
             failures.append('%s: не разобрана витринная таблица трёх контуров' % rel)
