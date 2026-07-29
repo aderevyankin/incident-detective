@@ -23,9 +23,12 @@
      проверки) -->
 
 ```bash
-cp -R incident-detective ~/.qwen/skills/incident-detective   # личный скилл
-cp -R incident-detective .qwen/skills/incident-detective     # проектный: едет в git с командой
+cp -R incident-detective ~/.gigacode/skills/incident-detective   # личный скилл
+cp -R incident-detective .gigacode/skills/incident-detective     # проектный: едет в git с командой
 ```
+
+Пути выше — каталоги скиллов GigaCode, целевой платформы. На другой платформе меняется
+только каталог: перечень — «[Поддерживаемые платформы](#поддерживаемые-платформы)» ниже.
 
 Дальше:
 
@@ -318,7 +321,7 @@ tests/                          не входит в устанавливаем�
 ## Скрипты отдельно от агента
 
 Всё работает и руками, без агента. `$SKILL_DIR` — директория, куда скилл поставлен
-(например, `~/.qwen/skills/incident-detective`; конкретный путь зависит от платформы и
+(например, `~/.gigacode/skills/incident-detective`; конкретный путь зависит от платформы и
 режима установки, см. «Быстрый старт» и «Поддерживаемые платформы» выше):
 
 <!-- check-docs: skip (иллюстративные пути app.log/gw.log/pay.log — не файлы
