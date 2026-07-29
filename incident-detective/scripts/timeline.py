@@ -343,8 +343,16 @@ def main(argv=None):
         if not path:
             label, path = os.path.basename(item), item
         labels.add(label)
-        with open(path, 'r', encoding='utf-8') as fh:
-            events.extend(events_from_parsed(json.load(fh), label))
+        # без перехвата отсутствующий файл давал сырую трассировку — в разборе
+        # инцидента это выглядит как поломка скрипта, а не как опечатка в пути
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                events.extend(events_from_parsed(json.load(fh), label))
+        except OSError as exc:
+            raise SystemExit('Не прочитал разбор %s: %s' % (path, exc))
+        except ValueError as exc:
+            raise SystemExit('Файл %s — не JSON-вывод parse_logs.py: %s '
+                             '(сохрани разбор через `--format json`)' % (path, exc))
     for item in args.log:
         label, _, path = item.partition('=')
         if not path:
@@ -397,6 +405,8 @@ def main(argv=None):
     win_end = args.until or max(times)
 
     if args.repo and is_git_repo(os.path.abspath(args.repo)):
+        # commits_in_window отдаёт время уже на шкале ленты (UTC) и понимает
+        # границы окна там же — иначе `tz_known: True` ниже был бы неправдой
         for commit in commits_in_window(os.path.abspath(args.repo), win_start, win_end):
             try:
                 ts = datetime.strptime(commit['date'], '%Y-%m-%d %H:%M')

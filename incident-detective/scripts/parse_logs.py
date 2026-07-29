@@ -33,6 +33,12 @@ from kb_common import parse_time_arg as _kb_parse_time_arg  # noqa: E402
 
 MAX_LINE = 8192
 LOG_EXTS = ('.log', '.txt', '.json', '.jsonl', '.ndjson', '.out', '.err')
+ARCHIVE_EXTS = ('.gz', '.bz2', '.xz', '.lzma', '.zip')
+
+# Хвост ротации: `app.log.1`, `messages.0`. Логи ротируются везде, и без этого
+# правила обход каталога брал только сегодняшний файл — то есть ровно не тот,
+# в котором инцидент, если разбор начался наутро.
+ROTATED_RE = re.compile(r'\.\d+$')
 
 LEVEL_ALIASES = {
     'TRACE': 'TRACE', 'TRC': 'TRACE', 'FINEST': 'TRACE', 'VERBOSE': 'TRACE',
@@ -44,6 +50,10 @@ LEVEL_ALIASES = {
     'FATAL': 'FATAL', 'CRIT': 'FATAL', 'CRITICAL': 'FATAL', 'PANIC': 'FATAL',
     'EMERG': 'FATAL', 'ALERT': 'FATAL',
 }
+
+# Числовые уровни python logging (DEBUG..CRITICAL). С syslog-severity 0..7 не
+# пересекаются, поэтому обе шкалы уживаются в одной проверке.
+PY_LOG_LEVELS = {10: 'DEBUG', 20: 'INFO', 30: 'WARN', 40: 'ERROR', 50: 'FATAL'}
 
 LEVEL_RE = re.compile(
     r'(?<![A-Za-z])('
@@ -152,9 +162,20 @@ def _ts_syslog(m):
     try:
         dt = datetime(year, mon, day, int(g[2]), int(g[3]), int(g[4]))
     except ValueError:
-        # 29 февраля в невисокосном году: остаёмся в году «сейчас»
-        year = now().year
-        dt = datetime(year, mon, day, int(g[2]), int(g[3]), int(g[4]))
+        # 29 февраля, а подставленный год невисокосный. Подставлять год «сейчас»
+        # бессмысленно — он невисокосный ровно так же, и время терялось совсем.
+        # Отступаем назад до ближайшего года, в котором такой день был: это
+        # заведомо прошлое, то есть та же гарантия «событие не в будущем».
+        dt = None
+        for back in range(1, 9):
+            try:
+                dt = datetime(year - back, mon, day, int(g[2]), int(g[3]), int(g[4]))
+            except ValueError:
+                continue
+            year -= back
+            break
+        if dt is None:
+            return None
     YEAR_ASSUMED.add(year)
     return dt
 
@@ -256,6 +277,22 @@ def _open_text(path, encoding):
     return open(path, 'r', encoding=encoding, errors='replace')
 
 
+def looks_like_log(fname):
+    """Брать ли файл при обходе каталога.
+
+    Явно указанный путь берётся всегда — правило нужно только для каталога, где
+    рядом с логами лежит что угодно. Ротация распознаётся по числовому хвосту:
+    `app.log.1` — тот же лог, `messages.0` — тоже (у syslog-файлов расширения
+    нет вовсе, поэтому имя без точек засчитывается, только если хвост ротации был).
+    """
+    if fname.endswith(LOG_EXTS) or fname.endswith(ARCHIVE_EXTS):
+        return True
+    base = ROTATED_RE.sub('', fname)
+    if base == fname:
+        return False
+    return base.endswith(LOG_EXTS) or base.endswith(ARCHIVE_EXTS) or '.' not in base
+
+
 def expand_sources(patterns):
     """Разворачивает пути, glob-маски и директории в список файлов."""
     import glob as globmod
@@ -271,8 +308,7 @@ def expand_sources(patterns):
             if os.path.isdir(path):
                 for root, _dirs, files in os.walk(path):
                     for fname in sorted(files):
-                        if fname.endswith(LOG_EXTS) or fname.endswith(
-                                ('.gz', '.bz2', '.xz', '.zip')):
+                        if looks_like_log(fname):
                             out.append(os.path.join(root, fname))
             else:
                 out.append(path)
@@ -314,7 +350,9 @@ def iter_lines(sources, encoding, max_lines):
                         count += 1
                         if count >= max_lines:
                             return
-        except (OSError, zipfile.BadZipFile, EOFError) as exc:
+        # lzma.LZMAError — не наследник OSError, в отличие от ошибок gzip и bz2:
+        # без него битый .xz валил разбор трассировкой вместо предупреждения
+        except (OSError, lzma.LZMAError, zipfile.BadZipFile, EOFError) as exc:
             print('warning: не прочитал %s: %s' % (path, exc), file=sys.stderr)
 
 
@@ -364,6 +402,11 @@ def norm_level(raw):
         return LEVEL_ALIASES[text]
     if text.isdigit():                       # syslog severity / http status
         num = int(text)
+        # уровни python logging: `logging.ERROR` в JSON-логе приезжает числом 40,
+        # и без этого соответствия запись проваливалась в INFO — то есть ошибка
+        # переставала быть ошибкой ровно там, где её ищут
+        if num in PY_LOG_LEVELS:
+            return PY_LOG_LEVELS[num]
         if 100 <= num <= 599:
             return 'ERROR' if num >= 500 else ('WARN' if num >= 400 else 'INFO')
         return {0: 'FATAL', 1: 'FATAL', 2: 'FATAL', 3: 'ERROR',
@@ -543,7 +586,11 @@ def classify_line(text):
         return False, None
     if stripped[0] == '{' and stripped[-1] == '}':
         return True, None
-    if stripped[0] in ' \t':
+    # отступ проверяется по исходному тексту: после strip() строка не начинается
+    # с пробела никогда, и проверка не срабатывала — а отбитая пробелами строка
+    # стектрейса с таймстемпом внутри (дамп payload, вложенный лог) рвала запись
+    # надвое. Заодно продолжение перестаёт оплачивать поиск таймстемпа.
+    if text[0] in ' \t':
         return False, None
     dt, end, _start, tz_known = find_timestamp_full(text, limit=64)
     hint = (dt, end, tz_known)
@@ -818,9 +865,14 @@ def analyze(records, args):
             continue
 
         stats['filtered'] += 1
-        for exc in set(EXC_RE.findall(rec.raw_text[:4000])):
-            stats['exceptions'][exc] += 1
-        for exc in set(PY_EXC_RE.findall(rec.raw_text[:4000])):
+        # находки обеих регулярок объединяются до инкремента: PY_EXC_RE отличается
+        # от EXC_RE лишь суффиксом `Warning` и привязкой к началу строки, поэтому
+        # `ValueError: bad input` находится обеими — и класс считался бы дважды
+        # sorted, а не голое множество: при равных частотах порядок в выводе
+        # задаётся порядком первого инкремента, а обход множества строк зависит
+        # от хеша процесса — два прогона на одном логе давали разные сводки
+        head = rec.raw_text[:4000]
+        for exc in sorted(set(EXC_RE.findall(head)) | set(PY_EXC_RE.findall(head))):
             stats['exceptions'][exc] += 1
         if rec.ts:
             hist[rec.ts.replace(second=0, microsecond=0)] += 1
@@ -979,10 +1031,15 @@ def _render_md(result, args, out, room, head_only=False):
 
     if problems:
         wanted = problems[:args.top]
-        shown = fit_groups(wanted, room) if room is not None else len(wanted)
+        picked = (fit_groups(wanted, room) if room is not None
+                  else list(range(len(wanted))))
+        shown = len(picked)
         w('## Ошибки и предупреждения (топ %d из %d шаблонов)\n\n'
           % (shown, len(problems)))
-        render_groups(wanted[:shown], w, start=1)
+        # номер группы — её место в общем порядке, а не порядковый номер строки:
+        # по нему пользователь просит сырые записи через `--context`, и после
+        # усечения показанные группы идут не подряд
+        render_groups([wanted[i] for i in picked], w, numbers=[i + 1 for i in picked])
         hidden = len(problems) - shown
         if hidden > 0:
             # причины разные, и путать их не надо: `--top` пользователь задал сам,
@@ -1012,15 +1069,40 @@ def group_size(grp):
     return len(buf.getvalue())
 
 
-def fit_groups(groups, room):
-    """Сколько групп поместится в отведённый объём. Минимум одна: сводка без
-    единого шаблона не отвечает на вопрос, ради которого её читают."""
+EARLY_KEPT = 2
+
+
+def fit_groups(groups, room, early=EARLY_KEPT):
+    """Номера групп (индексы в `groups`), попадающих в отведённый объём.
+
+    Группы отсортированы по частоте, поэтому усечение «первые N» режет хвост — а
+    в хвосте живут редкие, но самые ранние шаблоны. Именно они обычно называют
+    причину: частое приходит следом и является следствием. Поэтому место
+    резервируется под `early` самых ранних шаблонов, и они остаются в сводке,
+    даже если по частоте не дотянули.
+
+    Порядок отбора: сначала самый частый шаблон (ради него сводку и открывают),
+    затем ранние, затем остальные по частоте. Минимум одна группа показывается
+    всегда: сводка без единого шаблона не отвечает на вопрос, ради которого её
+    читают.
+    """
+    if not groups:
+        return []
+    sizes = [group_size(g) for g in groups]
+    earliest = sorted((i for i, g in enumerate(groups) if g.first is not None),
+                      key=lambda i: (groups[i].first, i))[:early]
+    order = [0]
+    order += [i for i in earliest if i not in order]
+    order += [i for i in range(len(groups)) if i not in order]
+
+    chosen = []
     used = 0
-    for i, grp in enumerate(groups):
-        used += group_size(grp)
-        if used > room and i > 0:
-            return i
-    return len(groups)
+    for i in order:
+        if used + sizes[i] > room and chosen:
+            continue
+        chosen.append(i)
+        used += sizes[i]
+    return sorted(chosen)
 
 
 def _render_tail(result, args, out):
@@ -1060,8 +1142,12 @@ def _render_tail(result, args, out):
           '`kb_search.py --from-parsed <файл>` (сохрани разбор через `--format json`).\n')
 
 
-def render_groups(groups, w, start=1):
-    for i, grp in enumerate(groups, start):
+def render_groups(groups, w, start=1, numbers=None):
+    # номера задаются списком, когда показанные группы идут не подряд: номер
+    # должен указывать на группу, а не на строку сводки — по нему запрашивают
+    # `--context`
+    seq = numbers if numbers is not None else range(start, start + len(groups))
+    for i, grp in zip(seq, groups):
         w('**#%d · %d× · %s**\n' % (i, grp.count, grp.level))
         w('`%s`\n' % grp.template)
         detail = []
@@ -1142,6 +1228,9 @@ def render_json(result, args, out):
             'mixed_timezones': bool(stats['tz_known'] and stats['tz_unknown']),
             'time_assumptions': time_notes(stats),
         },
+        # `--top` сюда не применяется: это правило md-сводки, которая едет в
+        # контекст агента. JSON пишется в файл и служит как раз способом увидеть
+        # то, что в сводку не поместилось, — усекать его нечем и незачем
         'groups': [{
             'n': i,
             'level': g.level,
@@ -1153,7 +1242,7 @@ def render_json(result, args, out):
             'sample': (g.sample or '')[:600],
             'origins': dict(g.origins),
             'sources': dict(g.sources),
-        } for i, g in enumerate(result['groups'][:args.top], 1)],
+        } for i, g in enumerate(result['groups'], 1)],
         'signatures': build_signatures(result),
         'trace_errors': dict(result['trace_errors'].most_common(10)),
         'histogram': {k.strftime('%Y-%m-%d %H:%M'): v

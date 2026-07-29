@@ -26,7 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kb_common import require_python; require_python()  # noqa: E402
 
 from kb_common import (  # noqa: E402
-    EXC_RE, MAX_SUMMARY_CHARS, dump_json, load_parsed, parse_time_arg, run_script,
+    EXC_RE, MAX_SUMMARY_CHARS, TIME_SCALE, dump_json, load_parsed, parse_time_arg,
+    run_script,
 )
 
 SKIP_DIRS = {'.git', 'node_modules', 'venv', '.venv', 'env', '__pycache__',
@@ -201,13 +202,38 @@ def is_git_repo(repo):
     return git(repo, 'rev-parse', '--is-inside-work-tree') == 'true'
 
 
+ISO_STRICT_RE = re.compile(
+    r'^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})([+-])(\d{2}):?(\d{2})$')
+
+
+def commit_date_utc(raw):
+    """Дата коммита из `--date=iso-strict`, приведённая к UTC.
+
+    `git log --date=format:` печатает время в зоне машины разбора. Дальше это
+    время попадает в ленту `timeline.py` под шапкой «времена в UTC» — то есть
+    коммит уезжает относительно логов на величину смещения, и вывод «выкатили
+    прямо перед сбоем» получается или теряется от того, где сидит разбирающий.
+    Поэтому git просят печатать зону явно, а приводим её мы сами.
+    """
+    m = ISO_STRICT_RE.match(raw.strip())
+    if not m:
+        # чужой формат: лучше отдать как есть, чем выбросить коммит из вывода
+        return raw.strip()[:16].replace('T', ' ')
+    g = m.groups()
+    dt = datetime(int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4]), int(g[5]))
+    shift = timedelta(hours=int(g[7]), minutes=int(g[8]))
+    return (dt - shift if g[6] == '+' else dt + shift).strftime('%Y-%m-%d %H:%M')
+
+
 def commits_in_window(repo, start, end, limit=15):
     if not start:
         return []
-    since = (start - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
-    until = (end or start).strftime('%Y-%m-%d %H:%M:%S')
+    # `+0000` в границах обязателен: без зоны git понимает их в зоне машины, и
+    # окно уезжает вместе с ней — а приходит оно с той же шкалы UTC, что и лента
+    since = (start - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S +0000')
+    until = (end or start).strftime('%Y-%m-%d %H:%M:%S +0000')
     out = git(repo, 'log', '--since=%s' % since, '--until=%s' % until,
-              '--date=format:%Y-%m-%d %H:%M', '-n', str(limit),
+              '--date=iso-strict', '-n', str(limit),
               '--pretty=format:%h|%ad|%an|%s')
     if not out:
         return []
@@ -215,7 +241,7 @@ def commits_in_window(repo, start, end, limit=15):
     for line in out.split('\n'):
         parts = line.split('|', 3)
         if len(parts) == 4:
-            rows.append({'hash': parts[0], 'date': parts[1],
+            rows.append({'hash': parts[0], 'date': commit_date_utc(parts[1]),
                          'author': parts[2], 'subject': parts[3]})
     return rows
 
@@ -472,7 +498,10 @@ def render_md(data, out):
 
     commits = data['commits']
     if commits:
-        w('## Коммиты в окне инцидента (сутки до первой ошибки)\n\n')
+        # шкала называется рядом с временами: сверять их будут с логами, а те
+        # приведены к той же шкале
+        w('## Коммиты в окне инцидента (сутки до первой ошибки, времена в %s)\n\n'
+          % TIME_SCALE)
         for c in commits:
             w('- `%s` %s · %s · %s\n' % (c['hash'], c['date'], c['author'], c['subject'][:80]))
         w('\nСовпадение по времени — повод посмотреть, а не доказательство. '
