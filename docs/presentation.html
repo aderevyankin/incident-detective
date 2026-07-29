@@ -293,9 +293,11 @@
   <section class="slide" data-title="Три контура и сигнатура">
     <svg class="slide-bg" aria-hidden="true"><use href="#bg-contours" width="100%" height="100%"></use></svg>
     <h2>Три контура и что их связывает</h2>
+    <!-- Таблица витринная; канон — таблица в incident-detective/SKILL.md, правится сначала он.
+         Синхронность состава скриптов проверяет tools/check_docs.py. -->
     <table>
       <tr><th>Контур</th><th>Вопрос</th><th>Инструмент</th></tr>
-      <tr><td>База знаний</td><td>Мы это уже видели? Откуда брать логи?</td><td><code>kb_search.py</code></td></tr>
+      <tr><td>База знаний</td><td>Мы это уже видели? Откуда брать логи?</td><td><code>kb_search.py</code>, <code>kb_add.py</code></td></tr>
       <tr><td>Логи</td><td>Что происходило на самом деле?</td><td><code>parse_logs.py</code>, <code>timeline.py</code>, <code>trace.py</code></td></tr>
       <tr><td>Код</td><td>Где ломается и из-за чего?</td><td><code>code_hints.py</code></td></tr>
     </table>
