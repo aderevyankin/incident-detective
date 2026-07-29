@@ -126,6 +126,13 @@ class WeakKbHint(ScriptCase):
         row = self._kb_row([self._hit(self.UNVERIFIED)], ['--stand', 'prod'])
         self.assertLess(row['value'], 0.5, row)
         self.assertIn('сверь условия', row['hint'])
+        # подсказку читает человек: «с другого стенд» выдаёт склейку строк
+        self.assertIn('с другого стенда', row['hint'])
+
+    def test_foreign_service_hint_names_the_contour_in_the_right_case(self):
+        # у записи services: [billing-api] — сверяем с заведомо чужим сервисом
+        row = self._kb_row([self._hit(self.UNVERIFIED)], ['--service', 'payment-api'])
+        self.assertIn('с другого сервиса', row['hint'])
 
     def test_refuted_record_hint_does_not_ask_to_write_the_same_case(self):
         """Опровергнутая запись обнуляет вклад — но она найдена, и это не «базы нет»."""

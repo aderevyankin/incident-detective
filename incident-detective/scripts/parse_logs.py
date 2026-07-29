@@ -40,6 +40,14 @@ ARCHIVE_EXTS = ('.gz', '.bz2', '.xz', '.lzma', '.zip')
 # в котором инцидент, если разбор начался наутро.
 ROTATED_RE = re.compile(r'\.\d+$')
 
+# У syslog-файлов расширения нет вовсе, опознать их можно только по имени.
+# Без перечня правило «имя без точек плюс числовой хвост» тянет в разбор
+# `core.12345`, `dump.7`, `report.2024` — всё, что угодно с числом на конце.
+SYSLOG_NAMES = frozenset((
+    'messages', 'syslog', 'secure', 'auth', 'cron', 'mail', 'kern', 'daemon',
+    'debug', 'dmesg', 'boot', 'user', 'console', 'audit',
+))
+
 LEVEL_ALIASES = {
     'TRACE': 'TRACE', 'TRC': 'TRACE', 'FINEST': 'TRACE', 'VERBOSE': 'TRACE',
     'DEBUG': 'DEBUG', 'DBG': 'DEBUG', 'FINE': 'DEBUG', 'D': 'DEBUG',
@@ -282,15 +290,23 @@ def looks_like_log(fname):
 
     Явно указанный путь берётся всегда — правило нужно только для каталога, где
     рядом с логами лежит что угодно. Ротация распознаётся по числовому хвосту:
-    `app.log.1` — тот же лог, `messages.0` — тоже (у syslog-файлов расширения
-    нет вовсе, поэтому имя без точек засчитывается, только если хвост ротации был).
+    `app.log.1` — тот же лог, `messages.0` — тоже.
+
+    Имя без расширения засчитывается не любое: одного числового хвоста мало,
+    иначе в разбор поедут `core.12345` и `dump.7`. Нужно узнаваемое имя
+    syslog — из `SYSLOG_NAMES` или оканчивающееся на `log` (`maillog`,
+    `xferlog`). Файл с нестандартным именем и без расширения берётся явным
+    путём или маской.
     """
     if fname.endswith(LOG_EXTS) or fname.endswith(ARCHIVE_EXTS):
         return True
     base = ROTATED_RE.sub('', fname)
     if base == fname:
         return False
-    return base.endswith(LOG_EXTS) or base.endswith(ARCHIVE_EXTS) or '.' not in base
+    if base.endswith(LOG_EXTS) or base.endswith(ARCHIVE_EXTS):
+        return True
+    low = base.lower()
+    return '.' not in base and (low in SYSLOG_NAMES or low.endswith('log'))
 
 
 def expand_sources(patterns):
@@ -1034,8 +1050,13 @@ def _render_md(result, args, out, room, head_only=False):
         picked = (fit_groups(wanted, room) if room is not None
                   else list(range(len(wanted))))
         shown = len(picked)
-        w('## Ошибки и предупреждения (топ %d из %d шаблонов)\n\n'
-          % (shown, len(problems)))
+        # «топ» верно, только пока показан неразрывный префикс частотного порядка.
+        # Уложив группы в бюджет, `fit_groups` намеренно оставляет среди них ранние
+        # редкие — они уже не топ по частоте, и называть их так значит врать о том,
+        # по какому правилу отобраны
+        by_frequency = picked == list(range(shown))
+        w('## Ошибки и предупреждения (%s %d из %d шаблонов)\n\n'
+          % ('топ' if by_frequency else 'показано', shown, len(problems)))
         # номер группы — её место в общем порядке, а не порядковый номер строки:
         # по нему пользователь просит сырые записи через `--context`, и после
         # усечения показанные группы идут не подряд

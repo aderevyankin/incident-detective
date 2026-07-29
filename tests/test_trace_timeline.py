@@ -2,6 +2,7 @@
 """Хронология и сквозная цепочка запроса: порядок событий и точка обрыва."""
 
 import json
+import os
 import unittest
 
 import helpers
@@ -73,6 +74,26 @@ class Timeline(ScriptCase):
         spikes = [e for e in self._events() if e['kind'] == 'всплеск']
         self.assertTrue(spikes, 'всплеск ошибок в 12:34 не найден')
         self.assertEqual(spikes[0]['ts'], '2026-07-28 12:34:00')
+
+    def _timeline_error(self, text):
+        path = os.path.join(self.tmp, 'parsed.json')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(text)
+        code, _out, err = self.run_script('timeline.py', ['--parsed', 'a=' + path])
+        self.assertNotEqual(code, 0, 'ожидалась осмысленная ошибка, а разбор прошёл')
+        return err
+
+    def test_broken_json_is_named_as_such(self):
+        err = self._timeline_error('не json')
+        self.assertIn('не JSON-вывод parse_logs.py', err)
+
+    def test_valid_json_of_wrong_shape_is_not_blamed_on_json(self):
+        """Ошибку разбора JSON нельзя приписывать файлу, который разобрался."""
+        err = self._timeline_error('[]')
+        self.assertNotIn('не JSON-вывод', err,
+                         'валидный JSON объявлен неразобранным — причина названа неверно')
+        self.assertIn('не разбор parse_logs.py', err)
+        self.assertNotIn('Traceback', err, 'вместо объяснения выдана сырая трассировка')
 
 
 if __name__ == '__main__':

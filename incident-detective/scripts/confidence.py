@@ -176,7 +176,10 @@ def score_kb(kb, stand, service):
                 '(`kb_add.py --update %s --outcome confirmed|refuted`)'
                 % (best.get('id'), best.get('id')))
 
-    for key, expected, label in (('stands', stand, 'стенд'), ('services', service, 'сервис')):
+    # метка контура нужна в двух падежах: в предупреждении она подлежащее
+    # («другой стенд»), в подсказке — дополнение («с другого стенда»)
+    for key, expected, label, of_label in (('stands', stand, 'стенд', 'стенда'),
+                                           ('services', service, 'сервис', 'сервиса')):
         if not expected:
             continue
         have = {str(v).lower() for v in (meta.get(key) or [])}
@@ -187,7 +190,7 @@ def score_kb(kb, stand, service):
             # несовпадение условий ставит под сомнение само совпадение, поэтому
             # оно важнее исхода: сначала сверить условия, потом подтверждать
             hint = ('сверь условия: запись %s с другого %s (%s), совпадение может '
-                    'быть внешним' % (best.get('id'), label, ', '.join(sorted(have))))
+                    'быть внешним' % (best.get('id'), of_label, ', '.join(sorted(have))))
     return {'value': clamp(val), 'notes': notes, 'warnings': warnings, 'hint': hint}
 
 

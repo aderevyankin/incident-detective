@@ -95,6 +95,36 @@ class EdgeInputs(ScriptCase):
                          ['app.log', 'app.log.1', 'messages.0'],
                          'ротированные файлы не подхватились')
 
+    def test_numeric_tail_alone_does_not_make_a_file_a_log(self):
+        """Числовой хвост — не признак лога: рядом лежат дампы и выгрузки.
+
+        `core.12345` разбирался бы как лог только потому, что имя без точек
+        и кончается числом.
+        """
+        tmp = self.tmpdir()
+        logs = os.path.join(tmp, 'logs')
+        os.makedirs(logs)
+        write(os.path.join(logs, 'app.log'),
+              '2026-07-28 12:00:00 ERROR свежая запись\n')
+        for junk in ('core.12345', 'dump.7', 'report.2024'):
+            write(os.path.join(logs, junk),
+                  '2026-07-28 11:00:00 ERROR это не лог\n')
+        parsed = self.json_of('parse_logs.py', [logs])
+        self.assertEqual(sorted(parsed['stats']['origins']), ['app.log'],
+                         'в разбор попали файлы, которые логами не являются')
+
+    def test_syslog_names_without_extension_are_still_picked_up(self):
+        """Сужение правила не должно отрезать сам syslog, ради которого оно есть."""
+        tmp = self.tmpdir()
+        logs = os.path.join(tmp, 'logs')
+        os.makedirs(logs)
+        for name in ('messages.0', 'syslog.1', 'maillog.2'):
+            write(os.path.join(logs, name),
+                  '2026-07-28 10:00:00 ERROR ротация без расширения\n')
+        parsed = self.json_of('parse_logs.py', [logs])
+        self.assertEqual(sorted(parsed['stats']['origins']),
+                         ['maillog.2', 'messages.0', 'syslog.1'])
+
     def test_numeric_python_logging_level(self):
         tmp = self.tmpdir()
         path = write(os.path.join(tmp, 'app.json'), '\n'.join([
@@ -230,6 +260,25 @@ class Output(ScriptCase):
                 pairs.append((number, line.strip('`')))
                 number = None
         return pairs
+
+    def test_header_does_not_call_a_reordered_selection_the_top(self):
+        """После укладки в бюджет отобраны не топовые по частоте — заголовок честен."""
+        tmp = self.tmpdir()
+        path = self._early_rare_log(tmp)
+        code, out, err = self.run_script('parse_logs.py', [path, '--max-chars', '2600'])
+        self.assertEqual(code, 0, err)
+        header = [ln for ln in out.split('\n') if ln.startswith('## Ошибки')]
+        self.assertTrue(header, out)
+        self.assertNotIn('топ', header[0],
+                         'показаны не топовые по частоте группы, а заголовок зовёт их топом')
+        self.assertIn('показано', header[0])
+
+    def test_header_still_says_top_when_nothing_was_reordered(self):
+        tmp = self.tmpdir()
+        path = self._many_groups(tmp, 15)
+        code, out, err = self.run_script('parse_logs.py', [path, '--top', '5'])
+        self.assertEqual(code, 0, err)
+        self.assertIn('топ 5 из 15 шаблонов', out)
 
     def test_numbers_stay_unique_when_info_section_is_shown(self):
         """Раздел «Прочие сообщения» не переиспользует номера проблемных групп."""

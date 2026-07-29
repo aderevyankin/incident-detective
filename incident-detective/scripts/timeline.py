@@ -347,12 +347,22 @@ def main(argv=None):
         # инцидента это выглядит как поломка скрипта, а не как опечатка в пути
         try:
             with open(path, 'r', encoding='utf-8') as fh:
-                events.extend(events_from_parsed(json.load(fh), label))
+                # только разбор JSON: ValueError из `events_from_parsed` — это
+                # другая беда, и объяснять её как «файл не JSON» значит уводить
+                # от настоящей причины
+                payload = json.load(fh)
         except OSError as exc:
             raise SystemExit('Не прочитал разбор %s: %s' % (path, exc))
         except ValueError as exc:
             raise SystemExit('Файл %s — не JSON-вывод parse_logs.py: %s '
                              '(сохрани разбор через `--format json`)' % (path, exc))
+        # JSON разобрался — это ещё не значит, что перед нами разбор логов:
+        # без проверки список или число уходили в обход полей сырой трассировкой
+        if not isinstance(payload, dict):
+            raise SystemExit('Файл %s — валидный JSON, но не разбор parse_logs.py: '
+                             'ожидался объект с полем `groups`, а получен %s'
+                             % (path, type(payload).__name__))
+        events.extend(events_from_parsed(payload, label))
     for item in args.log:
         label, _, path = item.partition('=')
         if not path:

@@ -62,7 +62,8 @@ AI_CONTEXT.md              этот файл; AGENTS.md и GIGACODE.md — си�
 python3 tests/run.py              весь набор проверок (плюс проверка совместимости)
 python3 tests/run.py test_parse   один файл проверок
 python3 tools/bench.py            бюджеты скорости, ненулевой код при нарушении
-python3 tools/bench.py --budget-scale 5   то же со щадящим порогом (как в CI)
+python3 tools/bench.py --budget-scale 3   то же со щадящим порогом (как в CI)
+python3 tools/bench.py --json     машинный вывод: budget_scale в корне, threshold в строке
 npx @fission-ai/openspec@latest validate --specs --strict   спеки
 
 # автономный разбор целиком, на фикстурах репозитория

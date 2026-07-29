@@ -16,7 +16,7 @@
   python3 tools/bench.py --lines 100000     # быстрый прогон
   python3 tools/bench.py --only parse_logs
   python3 tools/bench.py --json             # для сравнения прогонов
-  python3 tools/bench.py --budget-scale 5   # щадящий порог для чужой машины (CI)
+  python3 tools/bench.py --budget-scale 3   # щадящий порог для чужой машины (CI)
 """
 
 import argparse
