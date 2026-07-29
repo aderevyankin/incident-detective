@@ -6,24 +6,16 @@
 <title>incident-detective: презентация проекта</title>
 <style>
   :root {
-    --bg: #fbfaf8;
-    --fg: #1c1a17;
-    --muted: #5a5650;
-    --accent: #8a3324;
-    --line: #ddd7ce;
-    --card: #f2efe9;
-    --code-bg: #ece7dd;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #17150f;
-      --fg: #ece8df;
-      --muted: #a39d90;
-      --accent: #e2896d;
-      --line: #3a3630;
-      --card: #221f19;
-      --code-bg: #241f18;
-    }
+    --bg: #01101B;
+    --fg: #FFFFFF;
+    --fg-secondary: #DCEFFD;
+    --muted: #878C9D;
+    --accent: #56D7FB;
+    --accent-2: #B51122;
+    --line: #32384A;
+    --card: #091D33;
+    --code-bg: #091D33;
+    --bg-art-opacity: 0.05;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -124,13 +116,13 @@
      печатную страницу, поэтому интервалы плотнее обычного списка. */
   .chain { font-size: 0.95rem; }
   .chain li { margin-bottom: 0.3em; }
-  /* Точка решения — не украшение, а пометка места, где ход разбора ветвится.
-     Цвета берутся из переменных темы, чтобы читалось и в светлой, и в тёмной. */
+  /* Развилка — не украшение, а пометка места, где ход разбора ветвится.
+     Цвета берутся из переменных темы. */
   .tag {
     display: inline-block;
     border: 1px solid var(--line);
-    background: var(--card);
-    color: var(--muted);
+    background: transparent;
+    color: var(--fg-secondary);
     border-radius: 3px;
     padding: 0.05em 0.4em;
     margin-right: 0.35em;
@@ -157,6 +149,35 @@
   }
   .nav-hit.left { left: 0; }
   .nav-hit.right { right: 0; }
+
+  /* Фоновая графика — водяной знак под содержимым слайда, не часть смысла.
+     Непозиционированные дети .slide рисуются позже позиционированных с z-index:0
+     (шаг «positioned descendants, z-index auto/0» стоит после «non-positioned
+     in-flow» в порядке отрисовки), поэтому без явного z-index:1 текст оказался бы
+     под фоном, а не над ним. */
+  .slide-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    pointer-events: none;
+    opacity: var(--bg-art-opacity);
+  }
+  .slide > *:not(.slide-bg) {
+    position: relative;
+    z-index: 1;
+  }
+  .bg-stroke { fill: none; stroke: var(--fg-secondary); stroke-width: 2; }
+  .bg-node { fill: var(--fg-secondary); stroke: none; }
+  .bg-tick { stroke: var(--fg-secondary); stroke-width: 2; }
+  .bg-tick-mark { stroke: var(--fg-secondary); stroke-width: 3; }
+  .bg-logline { fill: var(--fg-secondary); opacity: 0.35; }
+  .bg-logline-error { fill: var(--accent-2); opacity: 1.6; }
+  .bg-logtext {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+  }
 
   /* Обычный проектор — 1024×768. Поля в 9vw съедают там пятую часть ширины, а код
      набран под экран пошире: без этого «Свойства и границы» прокручиваются по
@@ -185,6 +206,17 @@
   }
 
   @media print {
+    :root {
+      --bg: #FFFFFF;
+      --fg: #111111;
+      --fg-secondary: #111111;
+      --muted: #444444;
+      --accent: #002C6F;
+      --accent-2: #6E0711;
+      --line: #999999;
+      --card: #F2F2F2;
+      --code-bg: #F2F2F2;
+    }
     body { overflow: visible; }
     .deck { height: auto; }
     .slide {
@@ -194,7 +226,7 @@
       page-break-after: always;
       overflow: visible;
     }
-    .counter, .nav-hit { display: none; }
+    .counter, .nav-hit, .slide-bg { display: none; }
     pre {
       white-space: pre-wrap;
       word-break: break-word;
@@ -207,6 +239,7 @@
 <div class="deck" id="deck">
 
   <section class="slide" data-title="Титул">
+    <svg class="slide-bg" aria-hidden="true"><use href="#bg-loglines" width="100%" height="100%"></use></svg>
     <p class="kicker">Agent Skill · разбор инцидентов</p>
     <h1>incident-detective</h1>
     <p class="subtitle">Логи, база прошлых случаев и код: три независимых источника сходятся
@@ -221,22 +254,23 @@
       уровнем уверенности.</p>
     <p>На выходе не пересказ логов, а <strong>вердикт с доказательствами</strong>: у каждого
       утверждения назван источник — файл и время в логе, запись базы знаний, строка кода.
-      Уверенности не хватает — так и сказано, с перечнем того, чего не хватило.</p>
+      Если уверенности не хватает, это так и написано, с перечнем того, чего не хватило.</p>
     <p>Разбор заканчивается не выводом, а <strong>следующим шагом</strong>: правки, баг или
-      задача на доисследование — и записью в базе знаний, чтобы следующий такой же инцидент
-      начинался не с нуля.</p>
+      задача на доисследование, а также записью в базе знаний, чтобы следующий такой же
+      инцидент начинался не с нуля.</p>
   </section>
 
   <section class="slide" data-title="Как проходит разбор">
+    <svg class="slide-bg" aria-hidden="true"><use href="#bg-chain" width="100%" height="100%"></use></svg>
     <h2>Как проходит разбор</h2>
     <ol class="chain">
       <li><strong>План работ</strong> — первым действием, до любых команд: ход разбора виден
         пользователю, и его можно остановить.</li>
       <li><strong>Предпроверка окружения</strong> и первый взгляд в базу знаний словами
-        пользователя. <span class="tag">точка решения</span>есть пригодный
+        пользователя. <span class="tag">развилка</span> есть пригодный
         <code>python3</code> — полный разбор; нет — ограниченный режим объявляется вслух.</li>
       <li><strong>Карточка инцидента</strong> и карта источников логов.
-        <span class="tag">точка решения</span>источник этого стенда уже записан — заходим
+        <span class="tag">развилка</span> источник этого стенда уже записан — заходим
         прямо туда; не записан — обследуем каналы и записываем результат, в том числе
         отрицательный.</li>
       <li><strong>Логи окном</strong> вокруг времени инцидента, а не файл целиком.</li>
@@ -244,7 +278,7 @@
         по сигнатурам → код → уверенность.</li>
       <li><strong>Чтение найденных мест в коде</strong> — механика падения, а не совпадение
         строки.</li>
-      <li><strong>Вывод.</strong> <span class="tag">точка решения</span>уровень уверенности
+      <li><strong>Вывод.</strong> <span class="tag">развилка</span> уровень уверенности
         задаёт формулировку вывода и ведущий следующий шаг.</li>
       <li><strong>Пополнение базы знаний</strong> — разбор оседает записью, а не остаётся в
         переписке.</li>
@@ -257,6 +291,7 @@
   </section>
 
   <section class="slide" data-title="Три контура и сигнатура">
+    <svg class="slide-bg" aria-hidden="true"><use href="#bg-contours" width="100%" height="100%"></use></svg>
     <h2>Три контура и что их связывает</h2>
     <table>
       <tr><th>Контур</th><th>Вопрос</th><th>Инструмент</th></tr>
@@ -273,6 +308,7 @@
   </section>
 
   <section class="slide" data-title="Почему выводу можно верить">
+    <svg class="slide-bg" aria-hidden="true"><use href="#bg-confidence" width="100%" height="100%"></use></svg>
     <h2>Почему выводу можно верить</h2>
     <p>Уровень уверенности считает <strong>скрипт</strong> — по числу и весу подтвердивших
       контуров, а не модель по ощущению от собственного текста. Отсюда и формулировка
@@ -317,6 +353,7 @@
   </section>
 
   <section class="slide" data-title="Пример: разбор в диалоге">
+    <svg class="slide-bg" aria-hidden="true"><use href="#bg-loglines" width="100%" height="100%"></use></svg>
     <h2>Пример 1. Разбор в диалоге, на фикстурах репозитория</h2>
     <p class="hint">Воспроизводимо: <code>tests/fixtures/logs/payment.log</code> +
       <code>tests/fixtures/kb/</code>, синтетические данные.</p>
@@ -344,6 +381,7 @@
   </section>
 
   <section class="slide code-dense" data-title="Пример: автономный разбор от алерта">
+    <svg class="slide-bg" aria-hidden="true"><use href="#bg-loglines" width="100%" height="100%"></use></svg>
     <h2>Пример 2. Тот же инцидент, но человека нет</h2>
     <p class="hint">Алерт в 03:31, дежурный спит: обвязка запускает клиента в изолированной
       среде и наутро читает файл. Прогон воспроизводится на фикстурах —
@@ -387,10 +425,11 @@ python3 $SKILL_DIR/scripts/triage.py \
         <p class="hint">Отчёт собирает скрипт, а не формулировка модели.</p>
       </div>
     </div>
-    <p>Каждый вопрос диалога заменён правилом вывода: источник логов — из карты источников,
-      запись в базу — только по явной настройке, следующий шаг — черновиком, без тикетов и
-      правок. Данных не хватило — вердикт <strong>«данных недостаточно»</strong> с перечнем
-      недостающего, а не догадка, которую ночью некому проверить.
+    <p>Каждый вопрос диалога заменён правилом вывода: источник логов берётся из карты
+      источников, запись в базу делается только по явной настройке, а следующий шаг
+      оформляется черновиком, без тикетов и правок. Если данных не хватило, вердикт —
+      <strong>«данных недостаточно»</strong> с перечнем недостающего, а не догадка,
+      которую ночью некому проверить.
       <strong>Условие применения</strong>: режим включается там, где среда запуска
       изолирована снаружи.</p>
   </section>
@@ -484,6 +523,62 @@ cp -R incident-detective .gigacode/skills/incident-detective     # проект�
 <div class="counter" id="counter"></div>
 <div class="nav-hit left" id="navLeft" aria-hidden="true"></div>
 <div class="nav-hit right" id="navRight" aria-hidden="true"></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="bg-chain" viewBox="0 0 800 200" preserveAspectRatio="xMidYMid slice">
+    <path class="bg-stroke" d="M40,60 L130,140 L220,60 L310,140 L400,60 L490,140 L580,60 L670,140 L760,60"></path>
+    <circle class="bg-node" cx="40" cy="60" r="6"></circle>
+    <circle class="bg-node" cx="130" cy="140" r="6"></circle>
+    <circle class="bg-node" cx="220" cy="60" r="6"></circle>
+    <circle class="bg-node" cx="310" cy="140" r="6"></circle>
+    <circle class="bg-node" cx="400" cy="60" r="6"></circle>
+    <circle class="bg-node" cx="490" cy="140" r="6"></circle>
+    <circle class="bg-node" cx="580" cy="60" r="6"></circle>
+    <circle class="bg-node" cx="670" cy="140" r="6"></circle>
+    <circle class="bg-node" cx="760" cy="60" r="6"></circle>
+  </symbol>
+
+  <symbol id="bg-contours" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice">
+    <path class="bg-stroke" d="M100,100 C250,150 300,250 400,300"></path>
+    <path class="bg-stroke" d="M700,120 C550,180 450,250 400,300"></path>
+    <path class="bg-stroke" d="M400,550 C400,450 400,380 400,300"></path>
+    <circle class="bg-node" cx="400" cy="300" r="8"></circle>
+  </symbol>
+
+  <symbol id="bg-confidence" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice">
+    <line class="bg-tick" x1="40" y1="300" x2="760" y2="300"></line>
+    <line class="bg-tick" x1="40" y1="285" x2="40" y2="315"></line>
+    <line class="bg-tick" x1="112" y1="285" x2="112" y2="315"></line>
+    <line class="bg-tick" x1="184" y1="285" x2="184" y2="315"></line>
+    <line class="bg-tick" x1="256" y1="285" x2="256" y2="315"></line>
+    <line class="bg-tick-mark" x1="328" y1="270" x2="328" y2="330"></line>
+    <line class="bg-tick" x1="400" y1="285" x2="400" y2="315"></line>
+    <line class="bg-tick" x1="472" y1="285" x2="472" y2="315"></line>
+    <line class="bg-tick-mark" x1="544" y1="270" x2="544" y2="330"></line>
+    <line class="bg-tick" x1="616" y1="285" x2="616" y2="315"></line>
+    <line class="bg-tick" x1="688" y1="285" x2="688" y2="315"></line>
+    <line class="bg-tick" x1="760" y1="285" x2="760" y2="315"></line>
+  </symbol>
+
+  <symbol id="bg-loglines" viewBox="0 0 900 400" preserveAspectRatio="xMidYMid slice">
+    <text class="bg-logtext bg-logline" x="16" y="20">{"timestamp": "2026-07-28 16:20:02", "level": "info", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "charge started, amount 1500"}</text>
+    <text class="bg-logtext bg-logline-error" x="16" y="44">{"timestamp": "2026-07-28 16:20:03", "level": "error", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="68">{"timestamp": "2026-07-28 16:21:11", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge started, amount 300"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="92">{"timestamp": "2026-07-28 16:21:12", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge completed"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="116">{"timestamp": "2026-07-28 16:20:02", "level": "info", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "charge started, amount 1500"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="140">{"timestamp": "2026-07-28 16:20:03", "level": "error", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="164">{"timestamp": "2026-07-28 16:21:11", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge started, amount 300"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="188">{"timestamp": "2026-07-28 16:21:12", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge completed"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="212">{"timestamp": "2026-07-28 16:20:02", "level": "info", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "charge started, amount 1500"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="236">{"timestamp": "2026-07-28 16:20:03", "level": "error", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="260">{"timestamp": "2026-07-28 16:21:11", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge started, amount 300"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="284">{"timestamp": "2026-07-28 16:21:12", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge completed"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="308">{"timestamp": "2026-07-28 16:20:02", "level": "info", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "charge started, amount 1500"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="332">{"timestamp": "2026-07-28 16:20:03", "level": "error", "service": "payment-api", "trace_id": "req-7f3a9c", "message": "ConnectionTimeoutError: timed out waiting for connection from pool after 5000 ms"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="356">{"timestamp": "2026-07-28 16:21:11", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge started, amount 300"}</text>
+    <text class="bg-logtext bg-logline" x="16" y="380">{"timestamp": "2026-07-28 16:21:12", "level": "info", "service": "payment-api", "trace_id": "req-11b2de", "message": "charge completed"}</text>
+  </symbol>
+</svg>
 
 <script type="application/json" id="facts">
 [
