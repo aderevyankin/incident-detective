@@ -43,7 +43,12 @@ python3 scripts/parse_logs.py app.log --context 3
 python3 scripts/parse_logs.py app.log --trace 7f3a9c21
 ```
 
-Флаги: `--level`, `--since`, `--until`, `--grep`, `--top`, `--context N`, `--trace ID`, `--histogram`, `--format md|json`, `--max-lines`, `--encoding`.
+Флаги: `--level`, `--since`, `--until`, `--grep`, `--top`, `--context N`, `--trace ID`, `--histogram`, `--show-info`, `--format md|json`, `--max-chars`, `--max-lines`, `--encoding`.
+
+Два из них нужны не всегда, но вытаскивают из тупика:
+
+- `--show-info` добавляет в сводку раздел «Прочие сообщения» — топ-5 шаблонов, которые не ошибки и не предупреждения. Повод: ошибок не нашлось вовсе или падение логировалось как INFO (обрыв лога, OOM, kill снаружи).
+- `--max-chars N` задаёт предел объёма сводки в символах; по умолчанию — `MAX_SUMMARY_CHARS`, `0` снимает предел. Предел существует потому, что сводка едет в контекст агента и остаётся там до конца разбора; снимать его стоит только при выводе в файл, а не в контекст.
 
 ## Как читать сводку
 
