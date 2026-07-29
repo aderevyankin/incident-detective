@@ -35,6 +35,11 @@ README, а не текста шагов разбора.
 | GigaCode | `~/.gigacode/skills/` | `.gigacode/skills/` в корне проекта |
 | Claude Code | `~/.claude/skills/` | `.claude/skills/` в корне проекта |
 
+**Основной путь установки — проектная директория GigaCode** (`.gigacode/skills/`): скилл
+копит базу знаний по тому проекту, инциденты которого разбирает, и версионируется вместе
+с ним. Личная установка остаётся допустимой и обязательна для автономного профиля
+(раздел 6.3). Роли остальных платформ этим не меняются.
+
 `$SKILL_DIR` в командах `SKILL.md` — директория, в которую скопирован скилл: например,
 `~/.qwen/skills/incident-detective` на Qwen Code, `~/.gigacode/skills/incident-detective`
 на GigaCode, `~/.claude/skills/incident-detective` на Claude Code. При проектной установке
