@@ -75,6 +75,11 @@ class Orchestrator(ScriptCase):
         for name in ('parsed.json', 'kb.json', 'confidence.json'):
             self.assertTrue(os.path.exists(os.path.join(self.tmp, name)),
                             '%s не сохранён' % name)
+        # репозиторий пустой и не git: контур кода ничего не дал — и сводка обязана
+        # это назвать, иначе нулевой вклад читается как «в коде всё в порядке»
+        self.assertIn('**Код** (0.00)', out, 'непройденный контур кода не назван')
+        self.assertIn('до места в коде не дотянулись', out,
+                      'не сказано, чего не хватило контуру кода')
 
     def test_full_run_on_healthy_log_finds_nothing(self):
         code, out, err = self.run_script('triage.py', [

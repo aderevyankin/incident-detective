@@ -96,5 +96,70 @@ class Telemetry(ScriptCase):
                          'контур кода не запускался — это и должно быть видно')
 
 
+class OrchestratorTelemetry(ScriptCase):
+    """triage.py в файле телеметрии: сам запуск и состав пройденных контуров.
+
+    Этапы оркестратор выполняет в одном процессе, поэтому отдельных строк на
+    `parse_logs.py` и `kb_search.py` в файле не появляется — и это не пробел, а
+    устройство: в телеметрии видно, что разбор шёл цепочкой, а какие контуры она
+    прошла, видно по сохранённым файлам этапов. Оба свойства проверяются здесь,
+    иначе «контуров не видно» и «контуры не запускались» неразличимы.
+    """
+
+    def setUp(self):
+        self.tmp = self.tmpdir()
+        self.file = os.path.join(self.tmp, 'telemetry.log')
+        self.out = os.path.join(self.tmp, 'stages')
+        self.repo = os.path.join(self.tmp, 'repo')
+        os.makedirs(self.repo)
+
+    def _lines(self):
+        with open(self.file, 'r', encoding='utf-8') as fh:
+            return [line for line in fh.read().split('\n') if line.strip()]
+
+    def _triage(self, repo=None):
+        return self.run_script(
+            'triage.py', [KNOWN, '--kb', helpers.KB, '--repo', repo or self.repo,
+                          '--out', self.out],
+            env={'INCIDENT_TRACE_FILE': self.file})
+
+    def test_chain_run_is_recorded_as_one_line(self):
+        code, _out, err = self._triage()
+        self.assertEqual(code, 0, err)
+        lines = self._lines()
+        self.assertEqual(len(lines), 1, 'ожидалась одна строка на цепочку: %s' % lines)
+        stamp, script, flags, rc = lines[0].split('\t')
+        self.assertEqual(stamp, helpers.NOW)
+        self.assertEqual(script, 'triage.py')
+        self.assertEqual(rc, 'rc=0')
+        self.assertIn('--kb', flags)
+        self.assertNotIn(helpers.KB, flags, 'значение аргумента утекло в телеметрию')
+
+    def test_order_of_runs_is_visible_around_the_chain(self):
+        """Порядок запусков читается по файлу: разбор до цепочки и поиск после неё."""
+        self.run_script('parse_logs.py', [KNOWN, '--format', 'json'],
+                        env={'INCIDENT_TRACE_FILE': self.file})
+        self._triage()
+        self.run_script('kb_search.py', ['таймаут', '--kb', helpers.KB],
+                        env={'INCIDENT_TRACE_FILE': self.file})
+        scripts = [line.split('\t')[1] for line in self._lines()]
+        self.assertEqual(scripts, ['parse_logs.py', 'triage.py', 'kb_search.py'])
+
+    def test_contours_of_the_chain_are_visible_by_their_files(self):
+        code, _out, err = self._triage()
+        self.assertEqual(code, 0, err)
+        for name in ('parsed.json', 'kb.json', 'code.json', 'confidence.json'):
+            self.assertTrue(os.path.exists(os.path.join(self.out, name)),
+                            'пройденный контур не оставил файла: %s' % name)
+
+    def test_skipped_contour_leaves_no_file(self):
+        """Несуществующий репозиторий: контур кода пропущен — файла нет."""
+        code, _out, err = self._triage(repo=os.path.join(self.tmp, 'нет-такого'))
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.exists(os.path.join(self.out, 'parsed.json')))
+        self.assertFalse(os.path.exists(os.path.join(self.out, 'code.json')),
+                         'контур кода не проходил — файла быть не должно')
+
+
 if __name__ == '__main__':
     unittest.main()

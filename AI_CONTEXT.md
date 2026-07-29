@@ -62,6 +62,7 @@ AI_CONTEXT.md              этот файл; AGENTS.md и GIGACODE.md — си�
 python3 tests/run.py              весь набор проверок (плюс проверка совместимости)
 python3 tests/run.py test_parse   один файл проверок
 python3 tools/bench.py            бюджеты скорости, ненулевой код при нарушении
+python3 tools/bench.py --budget-scale 5   то же со щадящим порогом (как в CI)
 npx @fission-ai/openspec@latest validate --specs --strict   спеки
 
 # автономный разбор целиком, на фикстурах репозитория
@@ -77,7 +78,9 @@ INCIDENT_MODE=auto python3 incident-detective/scripts/triage.py \
 
 CI (`.github/workflows/checks.yml`) гоняет `tests/run.py` на **Python 3.8** — на более
 новом интерпретаторе не заметили бы, что в скрипт заехала возможность языка, которой на
-стенде нет.
+стенде нет. Вторым job'ом идёт бенчмарк со щадящим порогом (`tools/bench.py
+--budget-scale N`): строгие числа бюджетов зависят от машины и остаются ручным пунктом
+приёмки, CI ловит регрессии на порядок.
 
 ## Жёсткие ограничения
 

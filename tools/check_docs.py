@@ -14,7 +14,9 @@
   3. дерево файлов в разделе «Структура» README.md совпадает с тем, что лежит в
      репозитории;
   4. презентация (`docs/presentation.html`) не обращается к внешним хостам, её
-     числовые утверждения подтверждены исходниками, а упомянутые файлы существуют.
+     числовые утверждения подтверждены исходниками, а упомянутые файлы существуют;
+  5. сама проверка не выключилась: командных блоков README исполнено не меньше
+     `MIN_README_COMMAND_BLOCKS`.
 
 Блок кода пропускается, если непосредственно перед ним есть HTML-комментарий вида
 `<!-- check-docs: skip (причина) -->` — команда требует внешнего окружения
@@ -40,6 +42,13 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPECS_DIR = os.path.join(REPO, 'openspec', 'specs')
 DOC_FILES = ['README.md', os.path.join('docs', 'walkthrough.md')]
 PRESENTATION = os.path.join(REPO, 'docs', 'presentation.html')
+
+# Нижняя граница исполненных командных блоков README. Регрессия в извлечении
+# блоков (например, в FENCE_RE) не роняет проверку — она просто перестаёт что-либо
+# находить, и прогон остаётся зелёным, ничего не проверив. Число взято с запасом
+# вниз от фактического (5 на момент введения), чтобы правка README не роняла
+# прогон из-за одного убранного примера.
+MIN_README_COMMAND_BLOCKS = 3
 
 SKIP_MARKER = re.compile(r'<!--\s*check-docs:\s*skip')
 FENCE_RE = re.compile(r'^```(\w*)\s*$')
@@ -145,6 +154,12 @@ def extract_blocks(text):
 
 
 def run_command_blocks(doc_path, text, failures):
+    """Исполняет командные блоки документа. Возвращает число исполненных.
+
+    Число нужно вызывающему: «ни одной ошибки» и «ни одной команды» выглядят
+    одинаково, и без счётчика сломанное извлечение блоков выдаёт себя за успех.
+    """
+    executed = 0
     for lang, body, skip in extract_blocks(text):
         if lang not in ('bash', 'sh', 'shell'):
             continue
@@ -152,6 +167,7 @@ def run_command_blocks(doc_path, text, failures):
             continue
         if not body.strip():
             continue
+        executed += 1
         proc = subprocess.run(body, shell=True, cwd=REPO, executable='/bin/bash',
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if proc.returncode != 0:
@@ -159,6 +175,17 @@ def run_command_blocks(doc_path, text, failures):
                 '%s: команда завершилась кодом %d:\n%s\n--- вывод ---\n%s'
                 % (doc_path, proc.returncode, body.strip(),
                    proc.stdout.decode('utf-8', 'replace')))
+    return executed
+
+
+def check_command_blocks_minimum(executed, failures, minimum=None):
+    """Проверка проверяет сама себя: исполнено не меньше заданного числа блоков."""
+    minimum = MIN_README_COMMAND_BLOCKS if minimum is None else minimum
+    if executed < minimum:
+        failures.append(
+            'README.md: исполнено командных блоков %d, ожидалось не менее %d — '
+            'похоже, извлечение блоков сломалось и проверка документации ничего '
+            'не проверяет' % (executed, minimum))
 
 
 # ---- 2. перечень capability -----------------------------------------------
@@ -344,13 +371,15 @@ def main(argv=None):
         return 2
     readme_text = read(readme_path)
 
+    executed = {}
     for rel in DOC_FILES:
         path = os.path.join(REPO, rel)
         if not os.path.isfile(path):
             failures.append('%s: файл не найден' % rel)
             continue
-        run_command_blocks(rel, read(path), failures)
+        executed[rel] = run_command_blocks(rel, read(path), failures)
 
+    check_command_blocks_minimum(executed.get('README.md', 0), failures)
     check_capabilities(readme_text, failures)
     check_structure(readme_text, failures)
     check_presentation(failures)

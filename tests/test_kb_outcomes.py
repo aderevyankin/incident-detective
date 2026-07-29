@@ -5,6 +5,7 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -135,15 +136,63 @@ class OutcomeInSearch(ScriptCase):
         self.assertIn('отличительные признаки', text)
         self.assertIn('локального лимита запросов на воркер', text)
 
+    QUERY = ['квота', 'провайдера', '429', 'billing']
+
+    def _kb_with_reuse(self, value):
+        """Копия базы, где у каждой записи проставлен свой `reuse_count`."""
+        tmp = tempfile.mkdtemp(prefix='triage-tests-')
+        self.addCleanup(shutil.rmtree, tmp, True)
+        kb = os.path.join(tmp, 'kb')
+        shutil.copytree(OUTCOMES_KB, kb)
+        for name in os.listdir(kb):
+            if not name.endswith('.md'):
+                continue
+            path = os.path.join(kb, name)
+            with open(path, 'r', encoding='utf-8') as fh:
+                text = fh.read()
+            head, rest = text.split('---\n', 2)[1], text.split('---\n', 2)[2]
+            head = ''.join(line for line in head.splitlines(True)
+                           if not line.startswith('reuse_count:'))
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write('---\n%sreuse_count: %d\n---\n%s' % (head, value, rest))
+        code, _out, err = self.run_script('kb_index.py', ['--kb', kb])
+        self.assertEqual(code, 0, err)
+        # правка frontmatter должна читаться обратно: испорченную запись поиск
+        # просто не нашёл бы, и сравнение счетов оказалось бы сравнением пустот
+        meta = self._read_meta(kb, CONFIRMED)
+        self.assertEqual(str(meta.get('reuse_count')), str(value))
+        return kb
+
+    @staticmethod
+    def _read_meta(kb, record_id):
+        sys.path.insert(0, helpers.SCRIPTS)
+        import kb_common
+        for name in os.listdir(kb):
+            if name.startswith(record_id):
+                with open(os.path.join(kb, name), 'r', encoding='utf-8') as fh:
+                    return kb_common.parse_frontmatter(fh.read())[0]
+        raise AssertionError('запись %s не найдена в %s' % (record_id, kb))
+
     def test_reuse_count_does_not_affect_relevance(self):
-        """Счётчик переиспользования — не участвует в скоринге релевантности."""
-        base = self.json_of('kb_search.py',
-                            ['квота', 'провайдера', '429', 'billing', '--kb', OUTCOMES_KB])
-        base_scores = {h['id']: h['score'] for h in base}
-        for h in base:
+        """Счётчик переиспользования не участвует в скоринге релевантности.
+
+        Раньше проверялось только отсутствие `reuse_count` среди причин совпадения:
+        обещание «тот же счёт при 0 и при 40» держалось комментарием. Теперь
+        счётчик действительно варьируется — иначе тихая правка скоринга («часто
+        переиспользуемое поднимаем выше») прошла бы незамеченной.
+        """
+        cold = self.json_of('kb_search.py', self.QUERY + ['--kb', self._kb_with_reuse(0)])
+        hot = self.json_of('kb_search.py', self.QUERY + ['--kb', self._kb_with_reuse(40)])
+
+        cold_scores = {h['id']: h['score'] for h in cold}
+        hot_scores = {h['id']: h['score'] for h in hot}
+        self.assertTrue(cold_scores, 'выдача пуста — сравнивать нечего')
+        self.assertEqual(cold_scores, hot_scores,
+                         'счёт изменился от одного лишь reuse_count')
+        self.assertEqual([h['id'] for h in cold], [h['id'] for h in hot],
+                         'порядок выдачи изменился от одного лишь reuse_count')
+        for h in cold + hot:
             self.assertNotIn('reuse_count', h.get('reasons', []))
-        # тот же счёт, будь у записи reuse_count 0 или 40 — поле не входит в scoring
-        self.assertTrue(all(v > 0 for v in base_scores.values()))
 
 
 class ReuseCounter(ScriptCase):

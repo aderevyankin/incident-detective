@@ -74,13 +74,28 @@ class GivenNow(ScriptCase):
                          'при ошибке разбор не должен выдавать сводку на системном времени')
 
     def test_unparsed_value_stops_every_script(self):
-        for name, args in (('kb_search.py', ['таймаут', '--kb', helpers.KB]),
+        """Каждый скрипт, а не выборочно: молча уехать на системные часы не должен ни один.
+
+        Аргументы взяты рабочие — иначе непонятно, чем скрипт остановлен:
+        неразобранным «сейчас» или разбором собственных флагов.
+        """
+        for name, args in (('parse_logs.py', [KNOWN]),
+                           ('kb_search.py', ['таймаут', '--kb', helpers.KB]),
                            ('kb_index.py', ['--kb', self.tmp]),
-                           ('timeline.py', ['--log', 'a=' + KNOWN])):
+                           ('kb_add.py', ['--title', 'Проверочная запись',
+                                          '--kb', self.tmp, '--dry-run']),
+                           ('timeline.py', ['--log', 'a=' + KNOWN]),
+                           ('trace.py', ['--log', 'a=' + KNOWN, '--id', 'req-1']),
+                           ('confidence.py', ['--stand', 'stage']),
+                           ('triage.py', [KNOWN, '--kb', helpers.KB,
+                                          '--out', self.tmp])):
             with self.subTest(script=name):
-                code, _out, err = self.run_script(name, args, now='никогда')
-                self.assertNotEqual(code, 0)
+                code, out, err = self.run_script(name, args, now='никогда')
+                self.assertNotEqual(code, 0, '%s не остановился' % name)
                 self.assertIn('INCIDENT_NOW', err)
+                self.assertNotIn('Traceback', err)
+                self.assertEqual(out.strip(), '',
+                                 '%s выдал сводку на системном времени' % name)
 
 
 if __name__ == '__main__':

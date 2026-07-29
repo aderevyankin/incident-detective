@@ -16,6 +16,7 @@
   python3 tools/bench.py --lines 100000     # быстрый прогон
   python3 tools/bench.py --only parse_logs
   python3 tools/bench.py --json             # для сравнения прогонов
+  python3 tools/bench.py --budget-scale 5   # щадящий порог для чужой машины (CI)
 """
 
 import argparse
@@ -344,13 +345,27 @@ def measure(work_dir, log_path, kb_dir, code_repo, lines, only):
     return results
 
 
-def verdict(key, elapsed, rate):
+def threshold(key, scale=1.0):
+    """Действующий порог замера: бюджет, ослабленный множителем.
+
+    Множитель ослабляет порог в обе стороны по смыслу замера: время можно
+    превысить в `scale` раз, скорость — недобрать во столько же. Таблица бюджетов
+    остаётся одна: вторая, «для CI», разошлась бы с первой на первой же правке.
+    """
     budget = BUDGETS[key]
+    if budget['kind'] == 'rate':
+        return budget['limit'] / float(scale)
+    return budget['limit'] * float(scale)
+
+
+def verdict(key, elapsed, rate, scale=1.0):
+    budget = BUDGETS[key]
+    limit = threshold(key, scale)
     if elapsed is None:
         return 'пропущен', None
     if budget['kind'] == 'rate':
-        return ('ok' if rate >= budget['limit'] else 'НАРУШЕН'), rate
-    return ('ok' if elapsed <= budget['limit'] else 'НАРУШЕН'), elapsed
+        return ('ok' if rate >= limit else 'НАРУШЕН'), rate
+    return ('ok' if elapsed <= limit else 'НАРУШЕН'), elapsed
 
 
 def main(argv=None):
@@ -361,9 +376,16 @@ def main(argv=None):
                     help='записей в эталонной базе знаний (%d)' % KB_RECORDS)
     ap.add_argument('--only', action='append',
                     help='мерить только указанный замер (можно повторять)')
+    ap.add_argument('--budget-scale', type=float, default=1.0, metavar='N',
+                    help='щадящий порог: бюджеты времени × N, скорости ÷ N '
+                         '(для чужой машины, чью производительность бюджеты не '
+                         'нормируют; по умолчанию 1 — строгие бюджеты)')
     ap.add_argument('--json', action='store_true', help='машинный вывод')
     ap.add_argument('--keep', help='директория для эталонного входа (не удалять)')
     args = ap.parse_args(argv)
+
+    if args.budget_scale < 1:
+        ap.error('--budget-scale ослабляет бюджеты, а не ужесточает: нужно N ≥ 1')
 
     if args.only:
         unknown = sorted(set(args.only) - set(BUDGETS))
@@ -371,6 +393,7 @@ def main(argv=None):
             ap.error('неизвестный ключ --only: %s. Известные ключи: %s'
                      % (', '.join(unknown), ', '.join(sorted(BUDGETS))))
 
+    scaled = args.budget_scale != 1.0
     work_dir = args.keep or tempfile.mkdtemp(prefix='triage-bench-')
     os.makedirs(work_dir, exist_ok=True)
     log_path = os.path.join(work_dir, 'bench.log')
@@ -394,7 +417,13 @@ def main(argv=None):
         if not args.json:
             sys.stdout.write('Эталонный вход: %d строк, %.1f МБ, база знаний %d записей\n'
                              % (written, size_mb, args.kb_records))
-            sys.stdout.write('Окружение: %s\n\n' % env_note)
+            sys.stdout.write('Окружение: %s\n' % env_note)
+            if scaled:
+                sys.stdout.write('Щадящий порог: множитель бюджета ×%g '
+                                 '(время × %g, скорость ÷ %g)\n'
+                                 % (args.budget_scale, args.budget_scale,
+                                    args.budget_scale))
+            sys.stdout.write('\n')
 
         results = measure(work_dir, log_path, kb_dir, code_repo, written,
                           set(args.only) if args.only else None)
@@ -405,7 +434,7 @@ def main(argv=None):
     violated = []
     rows = []
     for key, elapsed, rate, code, err in results:
-        status, value = verdict(key, elapsed, rate)
+        status, value = verdict(key, elapsed, rate, args.budget_scale)
         budget = BUDGETS[key]
         if code not in (0, None):
             status = 'ОШИБКА'
@@ -418,29 +447,47 @@ def main(argv=None):
             'elapsed': round(elapsed, 3) if elapsed is not None else None,
             'rate': round(rate) if rate else None,
             'budget': budget['limit'],
+            'threshold': round(threshold(key, args.budget_scale), 3),
             'status': status,
         })
 
     if args.json:
         json.dump({'environment': env_note, 'lines': written,
-                   'kb_records': args.kb_records, 'results': rows},
+                   'kb_records': args.kb_records,
+                   'budget_scale': args.budget_scale, 'results': rows},
                   sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write('\n')
     else:
-        sys.stdout.write('%-38s %14s %14s  %s\n' % ('замер', 'измерено', 'бюджет', 'вердикт'))
-        sys.stdout.write('%s\n' % ('-' * 78))
+        # при множителе показываются обе величины: по бюджету сверяются числа
+        # спеки, по порогу вынесен вердикт — иначе непонятно, что именно нарушено
+        head = ('замер', 'измерено', 'бюджет', 'порог', 'вердикт')
+        if scaled:
+            sys.stdout.write('%-38s %14s %14s %14s  %s\n' % head)
+            sys.stdout.write('%s\n' % ('-' * 93))
+        else:
+            sys.stdout.write('%-38s %14s %14s  %s\n'
+                             % (head[0], head[1], head[2], head[4]))
+            sys.stdout.write('%s\n' % ('-' * 78))
         for row in rows:
             if row['elapsed'] is None:
                 measured = '—'
                 limit = '—'
+                effective = '—'
             elif row['kind'] == 'rate':
                 measured = '%d стр/с' % row['rate']
                 limit = '≥ %d стр/с' % row['budget']
+                effective = '≥ %d стр/с' % round(row['threshold'])
             else:
                 measured = '%.2f с' % row['elapsed']
                 limit = '≤ %.1f с' % row['budget']
-            sys.stdout.write('%-38s %14s %14s  %s\n'
-                             % (row['title'], measured, limit, row['status']))
+                effective = '≤ %.1f с' % row['threshold']
+            if scaled:
+                sys.stdout.write('%-38s %14s %14s %14s  %s\n'
+                                 % (row['title'], measured, limit, effective,
+                                    row['status']))
+            else:
+                sys.stdout.write('%-38s %14s %14s  %s\n'
+                                 % (row['title'], measured, limit, row['status']))
         if violated:
             sys.stdout.write('\nНарушено бюджетов: %d\n' % len(violated))
             for key, status, err in violated:
